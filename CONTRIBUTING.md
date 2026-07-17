@@ -42,8 +42,9 @@ uv sync --locked
 ```
 
 The default development version is Python 3.12. Continuous integration tests
-Python 3.10 through 3.14; contributors do not need to reproduce the full matrix
-locally.
+GIL-enabled Python 3.10 through 3.15, free-threaded Python 3.14t and 3.15t, and
+a macOS native-extension lane; contributors do not need to reproduce the full
+matrix locally.
 
 ## Making Changes
 
@@ -79,6 +80,16 @@ For focused iteration, use:
 ```console
 make lint
 make test-rust
+make test-python
+```
+
+Select a free-threaded interpreter explicitly when checking that support
+locally:
+
+```console
+uv sync --locked --python 3.14t
+make test-python
+uv sync --locked --python 3.15t
 make test-python
 ```
 
