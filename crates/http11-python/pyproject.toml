@@ -1,0 +1,47 @@
+[build-system]
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "http11"
+dynamic = ["version"]
+description = "Sans-I/O HTTP/1.1 protocol engine for Python"
+readme = "../../README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "LICENSE.h11"]
+keywords = ["sans-io"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Internet :: WWW/HTTP",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/cnzakii/http11"
+Issues = "https://github.com/cnzakii/http11/issues"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "http11._core"
+python-source = "python"
+exclude = [
+    "python/**/__pycache__",
+    "python/**/*.pyc",
+    "python/**/*.pyo",
+]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "src/**/*.rs" },
+    { file = "../../Cargo.toml" },
+    { file = "../../Cargo.lock" },
+]

@@ -1,0 +1,58 @@
+# Python bytecode and native extensions
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+*.pyd
+
+# Python environments and local configuration
+.venv/
+.env
+.env.*
+!.env.example
+
+# Python build and packaging outputs
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Tests, coverage, and static analysis
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.lcov
+*.profraw
+*.profdata
+.ruff_cache/
+
+# Rust build and analysis outputs
+/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/coverage/
+/fuzz/target/
+**/*.rs.bk
+*.pdb
+rustc-ice-*.txt
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+CLAUDE.local.md
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Operating system metadata
+.DS_Store
+._*
+Thumbs.db
+[Dd]esktop.ini
+.directory

@@ -1,0 +1,33 @@
+[package]
+name = "http11-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+http11 = { path = "../crates/http11" }
+
+[[bin]]
+name = "http11_receive"
+path = "fuzz_targets/http11_receive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http11_fragmentation"
+path = "fuzz_targets/http11_fragmentation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http11_send"
+path = "fuzz_targets/http11_send.rs"
+test = false
+doc = false
+bench = false

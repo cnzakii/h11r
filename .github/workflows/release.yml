@@ -1,0 +1,205 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      maturin-version: ${{ steps.maturin.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Verify tag and package version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+          test -n "$version"
+          test "$RELEASE_TAG" = "v$version"
+          grep -Fq "## [$version] - " CHANGELOG.md
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: uv sync --locked
+      - name: Read locked maturin version
+        id: maturin
+        run: |
+          version="$(uv run --locked maturin --version)"
+          version="${version#maturin }"
+          test -n "$version"
+          echo "version=v$version" >> "$GITHUB_OUTPUT"
+      - run: make check
+      - run: cargo publish --dry-run -p http11 --locked
+
+  wheels:
+    name: Wheel (${{ matrix.artifact }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64
+            manylinux: "2014"
+            artifact: manylinux-x86_64
+          - os: ubuntu-22.04
+            target: aarch64
+            manylinux: "2014"
+            artifact: manylinux-aarch64
+          - os: macos-15-intel
+            target: x86_64
+            manylinux: auto
+            artifact: macos-x86_64
+          - os: macos-latest
+            target: aarch64
+            manylinux: auto
+            artifact: macos-aarch64
+          - os: windows-latest
+            target: x64
+            manylinux: auto
+            artifact: windows-x86_64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: ${{ needs.validate.outputs.maturin-version }}
+          working-directory: crates/http11-python
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --compatibility pypi --out dist
+      - name: Smoke-test native wheel
+        if: matrix.artifact != 'manylinux-aarch64'
+        shell: bash
+        working-directory: crates/http11-python
+        run: |
+          python -m pip install dist/*.whl
+          python -c "import http11"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ matrix.artifact }}
+          path: crates/http11-python/dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build source distribution
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          maturin-version: ${{ needs.validate.outputs.maturin-version }}
+          working-directory: crates/http11-python
+          args: --out dist
+      - name: Smoke-test source distribution
+        run: |
+          python -m pip install crates/http11-python/dist/*.tar.gz
+          python -c "import http11"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-sdist
+          path: crates/http11-python/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [validate, wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: [validate, wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check whether the crate version already exists
+        id: crate
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          status="$(curl --silent \
+            --user-agent "http11-release (+https://github.com/$GITHUB_REPOSITORY)" \
+            --output /dev/null --write-out '%{http_code}' \
+            "https://crates.io/api/v1/crates/http11/$VERSION")"
+          case "$status" in
+            200) exists=true ;;
+            404) exists=false ;;
+            *) echo "crates.io returned HTTP $status" >&2; exit 1 ;;
+          esac
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+      - name: Authenticate with crates.io
+        if: steps.crate.outputs.exists == 'false'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish crate
+        if: steps.crate.outputs.exists == 'false'
+        run: cargo publish -p http11 --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  github-release:
+    name: Publish GitHub release
+    needs: [publish-pypi, publish-crate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" --verify-tag --generate-notes

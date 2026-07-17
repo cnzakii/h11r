@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    # The fuzz harness has its own Cargo manifest and lockfile.
+    directories:
+      - "/"
+      - "/fuzz"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

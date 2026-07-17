@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUFF_OUTPUT_FORMAT: github
+  TY_OUTPUT_FORMAT: github
+
+jobs:
+  lint:
+    name: Lint and static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: uv sync --locked
+      - run: make lint
+
+  rust:
+    name: Rust stable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: make test-rust
+
+  msrv:
+    name: Rust 1.88 (MSRV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88
+      - run: make test-rust
+
+  python:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # Linux covers every supported Python minor. The macOS lane exercises
+      # the native extension without multiplying the full matrix.
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --locked
+      - run: make test-python
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    # OIDC authenticates Codecov without a stored upload secret. Codecov's
+    # GitHub App must be connected before the first upload.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.7
+      - run: uv sync --locked
+      - name: Generate Rust and Python coverage reports
+        run: make coverage
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          disable_search: true
+          # Coverage generation fails in the preceding step. Only an external
+          # upload failure remains advisory.
+          fail_ci_if_error: false
+          files: rust.lcov,coverage.xml
+          use_oidc: true

@@ -1,0 +1,72 @@
+[project]
+name = "http11-workspace"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[dependency-groups]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+    "maturin>=1.9.4,<2.0",
+]
+lint = [
+    "ruff>=0.15,<0.16",
+    "ty>=0.0.56,<0.1",
+]
+test = [
+    "coverage>=7.15,<8",
+    "h11==0.16.0",
+    "pytest>=9.0,<10",
+]
+benchmark = [
+    "pyperf>=2.10,<3",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["crates/http11-python"]
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle: import, statement, and syntax errors.
+    "E4",
+    "E7",
+    "E9",
+    # Pyflakes: undefined names, unused imports, and related errors.
+    "F",
+    # isort: import grouping and ordering.
+    "I",
+    # pyupgrade: syntax supported by the minimum Python version.
+    "UP",
+    # flake8-bugbear: likely bugs and fragile patterns.
+    "B",
+    # flake8-simplify: unnecessarily complex expressions and control flow.
+    "SIM",
+    # flake8-pyi: correctness and style of published type stubs.
+    "PYI",
+    # Ruff: stale noqa directives.
+    "RUF100",
+]
+
+[tool.ty.src]
+include = ["crates/http11-python/python"]
+
+# coverage.py measures the Python facade. cargo-llvm-cov measures Rust and the
+# PyO3 extension.
+[tool.coverage.run]
+branch = true
+source = ["http11"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["crates/http11-python/tests"]
+strict_config = true
+strict_markers = true
+strict_parametrization_ids = true
+strict_xfail = true
+filterwarnings = ["error"]
