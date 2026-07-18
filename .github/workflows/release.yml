@@ -51,40 +51,67 @@ jobs:
       - run: cargo publish --dry-run -p h11r --locked
 
   wheels:
-    name: Wheel (${{ matrix.artifact }})
+    name: Wheel (${{ matrix.platform }}, ${{ matrix.abi-profile }})
     needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        platform:
+          - manylinux-x86_64
+          - manylinux-aarch64
+          - macos-x86_64
+          - macos-aarch64
+          - windows-x86_64
+        abi-profile: [abi3, cp314t, abi3t]
         include:
-          - os: ubuntu-22.04
+          - platform: manylinux-x86_64
+            os: ubuntu-22.04
             target: x86_64
             manylinux: "2014"
-            artifact: manylinux-x86_64
-          - os: ubuntu-22.04
+          - platform: manylinux-aarch64
+            os: ubuntu-22.04
             target: aarch64
             manylinux: "2014"
-            artifact: manylinux-aarch64
-          - os: macos-15-intel
+          - platform: macos-x86_64
+            os: macos-15-intel
             target: x86_64
             manylinux: auto
-            artifact: macos-x86_64
-          - os: macos-latest
+          - platform: macos-aarch64
+            os: macos-latest
             target: aarch64
             manylinux: auto
-            artifact: macos-aarch64
-          - os: windows-latest
+          - platform: windows-x86_64
+            os: windows-latest
             target: x64
             manylinux: auto
-            artifact: windows-x86_64
+          - abi-profile: abi3
+            python-version: "3.12"
+            manylinux-interpreter: /opt/python/cp312-cp312/bin/python
+            wheel-tag: cp310-abi3
+          - abi-profile: cp314t
+            python-version: "3.14t"
+            manylinux-interpreter: /opt/python/cp314-cp314t/bin/python
+            wheel-tag: cp314-cp314t
+          - abi-profile: abi3t
+            python-version: "3.15t"
+            manylinux-interpreter: /opt/python/cp315-cp315t/bin/python
+            wheel-tag: cp315-abi3.abi3t
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@v6
+        id: build-python
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
+      - name: Set up GIL-enabled Python 3.15 for abi3t smoke test
+        if: matrix.abi-profile == 'abi3t' && matrix.platform != 'windows-x86_64'
+        id: gil-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+          update-environment: false
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
@@ -92,17 +119,46 @@ jobs:
           working-directory: crates/h11r-python
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --locked --compatibility pypi --out dist
-      - name: Smoke-test native wheel
-        if: matrix.artifact != 'manylinux-aarch64'
+          args: >-
+            --release --locked --compatibility pypi
+            --interpreter ${{ startsWith(matrix.platform, 'manylinux-') && matrix.manylinux-interpreter || steps.build-python.outputs.python-path }}
+            --out dist
+      - name: Validate wheel tag
+        id: wheel
         shell: bash
         working-directory: crates/h11r-python
         run: |
-          python -m pip install dist/*.whl
-          python -c "import h11r"
+          set -- dist/*.whl
+          test "$#" -eq 1
+          wheel="$1"
+          test -f "$wheel"
+          case "$(basename "$wheel")" in
+            *-${{ matrix.wheel-tag }}-*.whl) ;;
+            *) echo "unexpected wheel tag: $wheel" >&2; exit 1 ;;
+          esac
+          echo "path=$wheel" >> "$GITHUB_OUTPUT"
+      - name: Smoke-test native wheel
+        if: matrix.platform != 'manylinux-aarch64'
+        shell: bash
+        working-directory: crates/h11r-python
+        run: |
+          "${{ steps.build-python.outputs.python-path }}" -m pip install "${{ steps.wheel.outputs.path }}"
+          "${{ steps.build-python.outputs.python-path }}" -c "import h11r"
+      - name: Verify free-threaded import leaves the GIL disabled
+        if: matrix.platform != 'manylinux-aarch64' && matrix.abi-profile != 'abi3'
+        shell: bash
+        run: |
+          "${{ steps.build-python.outputs.python-path }}" -c "import h11r, sys, sysconfig; assert sysconfig.get_config_var('Py_GIL_DISABLED'); assert not sys._is_gil_enabled()"
+      - name: Smoke-test abi3t wheel on GIL-enabled Python 3.15
+        if: matrix.platform != 'manylinux-aarch64' && matrix.platform != 'windows-x86_64' && matrix.abi-profile == 'abi3t'
+        shell: bash
+        working-directory: crates/h11r-python
+        run: |
+          "${{ steps.gil-python.outputs.python-path }}" -m pip install "${{ steps.wheel.outputs.path }}"
+          "${{ steps.gil-python.outputs.python-path }}" -c "import h11r"
       - uses: actions/upload-artifact@v7
         with:
-          name: python-${{ matrix.artifact }}
+          name: python-${{ matrix.platform }}-${{ matrix.abi-profile }}
           path: crates/h11r-python/dist/*.whl
           if-no-files-found: error
 

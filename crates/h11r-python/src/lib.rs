@@ -5,7 +5,7 @@ use pyo3::types::PyModule;
 
 mod api;
 
-#[pymodule(gil_used = true)]
+#[pymodule(gil_used = false)]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     api::register(module)
