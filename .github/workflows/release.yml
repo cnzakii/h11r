@@ -77,7 +77,7 @@ jobs:
             target: x86_64
             manylinux: "2014"
           - platform: manylinux-aarch64
-            os: ubuntu-22.04
+            os: ubuntu-24.04-arm
             target: aarch64
             manylinux: "2014"
           - platform: macos-x86_64
@@ -138,14 +138,13 @@ jobs:
           esac
           echo "path=$wheel" >> "$GITHUB_OUTPUT"
       - name: Smoke-test native wheel
-        if: matrix.platform != 'manylinux-aarch64'
         shell: bash
         working-directory: crates/h11r-python
         run: |
           "${{ steps.build-python.outputs.python-path }}" -m pip install "${{ steps.wheel.outputs.path }}"
           "${{ steps.build-python.outputs.python-path }}" -c "import h11r"
       - name: Verify free-threaded import leaves the GIL disabled
-        if: matrix.platform != 'manylinux-aarch64' && matrix.abi-profile != 'abi3'
+        if: matrix.abi-profile != 'abi3'
         shell: bash
         run: |
           "${{ steps.build-python.outputs.python-path }}" -c "import h11r, sys, sysconfig; assert sysconfig.get_config_var('Py_GIL_DISABLED'); assert not sys._is_gil_enabled()"
