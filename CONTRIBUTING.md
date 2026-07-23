@@ -2,6 +2,9 @@
 
 Thank you for your interest in improving h11r.
 
+Participation in this project is governed by the
+[Code of Conduct ↗](https://github.com/cnzakii/h11r/blob/main/CODE_OF_CONDUCT.md).
+
 ## Before You Start
 
 Bug fixes, tests, documentation, API feedback, performance improvements, and

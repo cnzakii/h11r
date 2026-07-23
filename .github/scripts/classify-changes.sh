@@ -23,7 +23,7 @@ classify() {
         esac
 
         case "$path" in
-            .agents/* | docs/* | \
+            .agents/* | .github/ISSUE_TEMPLATE/* | docs/* | \
             .github/workflows/publish-docs.yml | \
             zensical.toml | *.md | LICENSE*)
                 ;;
@@ -39,6 +39,8 @@ classify() {
 if [ "${1-}" = "--self-test" ]; then
     test "$(printf '%s\n' README.md | classify)" = "code=false
 docs=true"
+    test "$(printf '%s\n' .github/ISSUE_TEMPLATE/01-bug-report.yml | classify)" = "code=false
+docs=false"
     test "$(printf '%s\n' docs/knowledge/tooling/zensical.md | classify)" = "code=false
 docs=false"
     test "$(printf '%s\n' crates/h11r/src/lib.rs | classify)" = "code=true
