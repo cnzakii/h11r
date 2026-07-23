@@ -1,4 +1,4 @@
-"""Sans-I/O HTTP/1.1 protocol engine."""
+"""Sans-I/O HTTP/1.1 library."""
 
 from ._core import (
     Connection,

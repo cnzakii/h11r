@@ -17,6 +17,7 @@
 - `crates/h11r-python`: PyO3 extension, Python package, stubs, tests, and
   Python benchmarks.
 - `fuzz`: Rust fuzz targets for protocol input and state exploration.
+- `docs/site`: authored source for the public documentation website.
 - `docs/knowledge`: source-based engineering facts, not project decisions or
   implementation plans.
 - `.agents/skills`: public project workflows for implementation, audit, and

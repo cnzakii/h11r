@@ -1,0 +1,130 @@
+name: Publish documentation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: documentation-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy documentation
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --locked
+      - run: make docs
+      - name: Prepare documentation history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin --force --tags
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            git fetch origin gh-pages --depth=1
+          fi
+      - name: Resolve documentation version
+        id: version
+        env:
+          PUBLISH_RELEASE: ${{ github.ref_type == 'tag' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$PUBLISH_RELEASE" != true ]]; then
+            test "$GITHUB_REF_NAME" = main
+            {
+              echo "identifier=dev"
+              echo "title=Development"
+              echo "latest=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          release_version="$(
+            awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml
+          )"
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$release_version"
+          test "$GITHUB_REF_NAME" = "v$release_version"
+
+          release_line="${release_version%.*}"
+          latest_line_release="$(
+            git tag --list "v$release_line.*" --sort=-version:refname |
+              awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ {
+                sub(/^v/, "")
+                print
+                exit
+              }'
+          )"
+          if [[ "$release_version" != "$latest_line_release" ]]; then
+            echo "refusing to replace $release_line docs with older $release_version" >&2
+            exit 1
+          fi
+
+          latest_release="$(
+            git tag --list "v*" --sort=-version:refname |
+              awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ {
+                sub(/^v/, "")
+                print
+                exit
+              }'
+          )"
+          {
+            echo "identifier=$release_line"
+            echo "title=$release_version"
+            if [[ "$release_version" = "$latest_release" ]]; then
+              echo "latest=true"
+            else
+              echo "latest=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+      - name: Build versioned documentation
+        env:
+          IDENTIFIER: ${{ steps.version.outputs.identifier }}
+          IS_LATEST: ${{ steps.version.outputs.latest }}
+          TITLE: ${{ steps.version.outputs.title }}
+        run: |
+          if [[ "$IS_LATEST" = true ]]; then
+            uv run --group docs --locked mike deploy \
+              --update-aliases \
+              --alias-type redirect \
+              --title "$TITLE" \
+              "$IDENTIFIER" latest
+            uv run --group docs --locked mike set-default latest
+          else
+            uv run --group docs --locked mike deploy \
+              --title "$TITLE" \
+              "$IDENTIFIER"
+            if [[ "$IDENTIFIER" = dev ]] &&
+              ! uv run --group docs --locked mike list latest > /dev/null 2>&1
+            then
+              uv run --group docs --locked mike alias \
+                --alias-type redirect \
+                dev latest
+              uv run --group docs --locked mike set-default latest
+            fi
+          fi
+          git push origin gh-pages
+      - name: Stage versioned site
+        run: |
+          mkdir site-versioned
+          git archive gh-pages | tar -x -C site-versioned
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site-versioned
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

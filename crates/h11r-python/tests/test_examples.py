@@ -8,11 +8,15 @@ import h11r
 import pytest
 
 EXAMPLES = [
+    ("first_client.py", "client received 200 with b'Hello from h11r!\\n'"),
     ("round_trip.py", "connection is ready for another request"),
     ("streaming_body.py", "streamed 36 bytes without collecting the body"),
     ("pipelining.py", "both pipelined responses were sent in request order"),
-    ("zero_copy_body.py", "h11r added chunk framing"),
-    ("websocket_upgrade.py", "WebSocket client received text: 'echo: hello'"),
+    (
+        "zero_copy_body.py",
+        "upload exchange is complete and the connection is reusable",
+    ),
+    ("websocket_upgrade.py", "client received WebSocket text: 'welcome'"),
 ]
 
 
@@ -20,6 +24,7 @@ EXAMPLES = [
     ("filename", "expected_output"),
     EXAMPLES,
     ids=[
+        "first-client",
         "round-trip",
         "streaming-body",
         "pipelining",

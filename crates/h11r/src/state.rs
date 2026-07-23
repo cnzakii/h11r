@@ -1,7 +1,7 @@
-// Portions of this state-machine implementation are adapted from h11 0.16.0.
-// Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors.
-// Licensed under the MIT License; see LICENSE.h11.
-// Upstream source:
+// Portions of this state-machine implementation are adapted from the
+// MIT-licensed h11 0.16.0, copyright (c) 2016 Nathaniel J. Smith
+// <njs@pobox.com> and other contributors.
+// Source:
 // https://github.com/python-hyper/h11/blob/1c5b07581f058886c8bdd87adababd7d959dc7ca/h11/_state.py
 
 //! HTTP/1.1 request and response lifecycle state.

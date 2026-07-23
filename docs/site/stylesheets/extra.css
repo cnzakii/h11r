@@ -1,0 +1,114 @@
+:root,
+body[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #3b6ea5;
+  --md-primary-fg-color--light: #6f94bb;
+  --md-primary-fg-color--dark: #2c5480;
+  --md-accent-fg-color: #3b6ea5;
+  --md-accent-fg-color--transparent: #3b6ea51a;
+  --md-typeset-a-color: #3b6ea5;
+}
+
+body[data-md-color-scheme="slate"][data-md-color-primary] {
+  --md-primary-fg-color: #3b6ea5;
+  --md-primary-fg-color--light: #6f94bb;
+  --md-primary-fg-color--dark: #2c5480;
+  --md-accent-fg-color: #8ab4df;
+  --md-accent-fg-color--transparent: #8ab4df1a;
+  --md-typeset-a-color: #8ab4df;
+}
+
+[data-md-component="outdated"] .md-banner--warning {
+  color: #293b4d;
+  background: #edf3f8;
+  border-bottom: 1px solid #d8e2eb;
+}
+
+[data-md-component="outdated"] .md-banner__inner {
+  padding-block: 0.45rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+[data-md-component="outdated"] .version-notice {
+  display: flex;
+  gap: 0.45rem;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+[data-md-component="outdated"] .version-notice a {
+  color: #285f91;
+  font-weight: 700;
+}
+
+body[data-md-color-scheme="slate"]
+  [data-md-component="outdated"]
+  .md-banner--warning {
+  color: #dce7f1;
+  background: #1d2a36;
+  border-bottom-color: #324354;
+}
+
+body[data-md-color-scheme="slate"]
+  [data-md-component="outdated"]
+  .version-notice
+  a {
+  color: #9cc5ea;
+}
+
+.md-typeset .md-typeset__table {
+  display: block;
+  width: 100%;
+}
+
+.md-typeset .md-typeset__table > table:not([class]) {
+  display: table;
+  width: 100%;
+}
+
+.md-typeset .home-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7rem;
+  gap: 2rem;
+  align-items: center;
+  margin-bottom: 1.75rem;
+}
+
+.md-typeset .home-intro h1 {
+  margin-top: 0;
+  margin-bottom: 0.4em;
+}
+
+.md-typeset .home-intro__tagline {
+  margin-bottom: 0.75rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.md-typeset .home-intro__summary {
+  max-width: 34rem;
+}
+
+.md-typeset .home-intro__mark {
+  display: block;
+  width: 100%;
+}
+
+@media screen and (max-width: 44.9844em) {
+  .md-typeset .home-intro {
+    grid-template-columns: minmax(0, 1fr) 4.5rem;
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .md-typeset .home-intro__mark {
+    margin-top: 0.25rem;
+  }
+
+  .md-typeset .home-intro .md-button {
+    min-width: 10rem;
+    text-align: center;
+  }
+}

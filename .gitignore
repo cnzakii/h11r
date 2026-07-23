@@ -16,6 +16,7 @@ build/
 dist/
 *.egg-info/
 *.whl
+/site/
 
 # Tests, coverage, and static analysis
 .pytest_cache/

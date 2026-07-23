@@ -15,7 +15,7 @@ uv sync --locked
 Run the first lesson:
 
 ```console
-uv run python examples/python/round_trip.py
+uv run python examples/python/first_client.py
 ```
 
 All examples use only h11r and the Python standard library except
@@ -54,6 +54,7 @@ This lets h11r distinguish a clean close from a truncated HTTP message.
 
 | Lesson | What it teaches |
 | --- | --- |
+| [`first_client.py`](python/first_client.py) | Serialize one client request and turn a complete response into events |
 | [`round_trip.py`](python/round_trip.py) | Request, `Data`, `EndOfMessage`, response, and keep-alive reuse over a synchronous byte stream |
 | [`streaming_body.py`](python/streaming_body.py) | Incremental body consumption, chunked framing, and trailers without collecting the full body |
 | [`pipelining.py`](python/pipelining.py) | Why buffered pipelined requests pause until the preceding response finishes |

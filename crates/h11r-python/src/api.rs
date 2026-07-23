@@ -1,4 +1,4 @@
-//! Python bindings for the HTTP/1.1 engine.
+//! Python bindings for the HTTP/1.1 library.
 
 use h11r as core;
 use h11r::{Method, StatusCode};
@@ -23,14 +23,17 @@ pyo3::create_exception!(
     h11r,
     RemoteProtocolError,
     ProtocolError,
-    "The peer sent invalid HTTP or exceeded an inbound limit."
+    "The peer sent invalid HTTP or exceeded an inbound limit.\n\n\
+     Attributes:\n    \
+         suggested_status_code (int | None): A suitable HTTP response status, \
+         when one is known."
 );
 
 /// An HTTP actor role.
 ///
 /// Attributes:
-///     CLIENT: The actor that sends requests and receives responses.
-///     SERVER: The actor that receives requests and sends responses.
+///     CLIENT (Role): The actor that sends requests and receives responses.
+///     SERVER (Role): The actor that receives requests and sends responses.
 #[pyclass(
     name = "Role",
     module = "h11r",
@@ -57,15 +60,15 @@ impl From<PyRole> for core::Role {
 /// An observable HTTP/1 actor lifecycle state.
 ///
 /// Attributes:
-///     IDLE: No message has started.
-///     SEND_RESPONSE: The server can send informational or final responses.
-///     SEND_BODY: The actor can send or receive body data and message end.
-///     DONE: The actor completed its message for the current cycle.
-///     MIGHT_SWITCH_PROTOCOL: The request ended while a switch decision is pending.
-///     SWITCHED_PROTOCOL: HTTP processing ended after a successful switch.
-///     MUST_CLOSE: The actor completed its message but reuse is forbidden.
-///     CLOSED: The actor closed its transport side.
-///     ERROR: A protocol error permanently poisoned the actor.
+///     IDLE (State): No message has started.
+///     SEND_RESPONSE (State): The server can send informational or final responses.
+///     SEND_BODY (State): The actor can send or receive body data and message end.
+///     DONE (State): The actor completed its message for the current cycle.
+///     MIGHT_SWITCH_PROTOCOL (State): The request ended while a switch decision is pending.
+///     SWITCHED_PROTOCOL (State): HTTP processing ended after a successful switch.
+///     MUST_CLOSE (State): The actor completed its message but reuse is forbidden.
+///     CLOSED (State): The actor closed its transport side.
+///     ERROR (State): A protocol error permanently poisoned the actor.
 #[pyclass(
     name = "State",
     module = "h11r",
@@ -106,8 +109,8 @@ impl From<core::State> for PyState {
 /// A non-event result returned by `Connection.next_event()`.
 ///
 /// Attributes:
-///     NEED_DATA: Supply more peer bytes before polling again.
-///     PAUSED: Complete the active cycle or hand off a switched protocol before
+///     NEED_DATA (ReceiveStatus): Supply more peer bytes before polling again.
+///     PAUSED (ReceiveStatus): Complete the active cycle or hand off a switched protocol before
 ///         polling HTTP again.
 #[pyclass(
     name = "ReceiveStatus",
@@ -126,11 +129,11 @@ enum PyReceiveStatus {
 /// A parsed request head.
 ///
 /// Attributes:
-///     method: Case-sensitive method bytes.
-///     target: Request-target bytes from the HTTP request line. See RFC 9112
+///     method (bytes): Case-sensitive method bytes.
+///     target (bytes): Request-target bytes from the HTTP request line. See RFC 9112
 ///         Section 3.2.
-///     headers: Ordered `(name, value)` byte pairs.
-///     http_version: Peer HTTP version bytes.
+///     headers (tuple[tuple[bytes, bytes], ...]): Ordered `(name, value)` byte pairs.
+///     http_version (bytes): Peer HTTP version bytes.
 #[pyclass(
     name = "Request",
     module = "h11r",
@@ -206,10 +209,10 @@ impl Eq for PyResponseValue {}
 /// A parsed non-final `1xx` response head.
 ///
 /// Attributes:
-///     status_code: Informational status code.
-///     reason: Reason-phrase bytes.
-///     headers: Ordered `(name, value)` byte pairs.
-///     http_version: Peer HTTP version bytes.
+///     status_code (int): Informational status code.
+///     reason (bytes): Reason-phrase bytes.
+///     headers (tuple[tuple[bytes, bytes], ...]): Ordered `(name, value)` byte pairs.
+///     http_version (bytes): Peer HTTP version bytes.
 #[pyclass(
     name = "InformationalResponse",
     module = "h11r",
@@ -255,10 +258,10 @@ impl PyInformationalResponse {
 /// A parsed final response head.
 ///
 /// Attributes:
-///     status_code: Final status code.
-///     reason: Reason-phrase bytes.
-///     headers: Ordered `(name, value)` byte pairs.
-///     http_version: Peer HTTP version bytes.
+///     status_code (int): Final status code.
+///     reason (bytes): Reason-phrase bytes.
+///     headers (tuple[tuple[bytes, bytes], ...]): Ordered `(name, value)` byte pairs.
+///     http_version (bytes): Peer HTTP version bytes.
 #[pyclass(name = "Response", module = "h11r", frozen, eq, skip_from_py_object)]
 #[derive(Debug)]
 struct PyResponse(PyResponseValue);
@@ -301,9 +304,9 @@ impl PyResponse {
 /// used chunked transfer coding.
 ///
 /// Attributes:
-///     data: Decoded body bytes.
-///     chunk_start: Whether this data begins an HTTP chunk.
-///     chunk_end: Whether this data ends an HTTP chunk.
+///     data (bytes): Decoded body bytes.
+///     chunk_start (bool): Whether this data begins an HTTP chunk.
+///     chunk_end (bool): Whether this data ends an HTTP chunk.
 #[pyclass(
     name = "Data",
     module = "h11r",
@@ -334,8 +337,12 @@ impl Eq for PyData {}
 
 /// The end of one HTTP message, optionally carrying trailer fields.
 ///
+/// `EndOfMessage()` creates an event without trailers. Pass an iterable of
+/// `(name, value)` pairs to construct one with trailers.
+///
 /// Attributes:
-///     trailers: Ordered trailer `(name, value)` byte pairs.
+///     trailers (tuple[tuple[bytes, bytes], ...]): Ordered trailer `(name, value)`
+///         byte pairs.
 #[pyclass(
     name = "EndOfMessage",
     module = "h11r",
@@ -395,11 +402,31 @@ impl PyConnectionClosed {
 /// `next_event()`, and write bytes returned by the send methods. Client and
 /// server state are tracked together regardless of the local role.
 ///
-/// Args:
-///     role: Whether the local endpoint is the client or server.
-///     max_head_bytes: Maximum inbound head or trailer section size. This also
-///         bounds an incomplete chunk-size line.
-///     max_header_count: Maximum inbound header or trailer field count.
+/// Construct a connection as:
+///
+/// ```text
+/// Connection(
+///     role,
+///     *,
+///     max_head_bytes=65536,
+///     max_header_count=100,
+/// )
+/// ```
+///
+/// `role` selects the local client or server endpoint. `max_head_bytes`
+/// defaults to 65,536 and limits each inbound head or trailer section,
+/// including an incomplete chunk-size line. `max_header_count` defaults to 100
+/// and limits each inbound head or trailer section's field count.
+///
+/// Attributes:
+///     local_state (State): The local protocol actor's lifecycle state.
+///     peer_state (State): The peer protocol actor's lifecycle state.
+///     peer_http_version (bytes | None): The most recently parsed peer HTTP
+///         version, if any.
+///     client_is_waiting_for_100_continue (bool): Whether the client is waiting
+///         for `100 Continue`.
+///     trailing_data (tuple[bytes, bool]): Bytes retained beyond the HTTP
+///         boundary and whether transport EOF was received.
 ///
 /// Raises:
 ///     ValueError: If any inbound limit is zero.
@@ -420,7 +447,7 @@ impl PyConnection {
     /// Append bytes received from the peer; empty bytes mark EOF.
     ///
     /// Args:
-    ///     data: Received bytes as `bytes`, `bytearray`, or `memoryview`.
+    ///     data (bytes | bytearray | memoryview): Bytes read from the transport.
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
@@ -434,8 +461,10 @@ impl PyConnection {
     /// Return the next peer event or a receive status.
     ///
     /// Returns:
-    ///     A protocol event, `ReceiveStatus.NEED_DATA` when more transport bytes
-    ///     are required, or `ReceiveStatus.PAUSED` at a cycle or switch boundary.
+    ///     event_or_status (Request | InformationalResponse | Response | Data | EndOfMessage | ConnectionClosed | ReceiveStatus):
+    ///         A protocol event, `ReceiveStatus.NEED_DATA` when more transport
+    ///         bytes are required, or `ReceiveStatus.PAUSED` at a cycle or
+    ///         switch boundary.
     ///
     /// Raises:
     ///     RemoteProtocolError: If peer bytes violate HTTP syntax, framing,
@@ -455,15 +484,17 @@ impl PyConnection {
     /// Serialize a request head.
     ///
     /// Args:
-    ///     method: Case-sensitive HTTP method as ASCII `str`, `bytes`,
-    ///         `bytearray`, or `memoryview`.
-    ///     target: Request target as ASCII `str`, `bytes`, `bytearray`, or
-    ///         `memoryview`. See RFC 9112 Section 3.2.
-    ///     headers: Iterable of `(name, value)` pairs.
-    ///     http_version: `b"1.1"` (default) or `b"1.0"`.
+    ///     method (str | bytes | bytearray | memoryview): Case-sensitive ASCII
+    ///         HTTP method.
+    ///     target (str | bytes | bytearray | memoryview): ASCII request target.
+    ///         See RFC 9112 Section 3.2.
+    ///     headers (Iterable): `(name, value)` pairs. Each item accepts ASCII
+    ///         `str`, `bytes`, `bytearray`, or `memoryview`.
+    ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
+    ///         (default) or `b"1.0"`.
     ///
     /// Returns:
-    ///     Bytes for the caller to write to the transport.
+    ///     wire_bytes (bytes): Bytes for the caller to write to the transport.
     ///
     /// Raises:
     ///     TypeError: If a header is not a two-item tuple or an input is not
@@ -495,13 +526,16 @@ impl PyConnection {
     /// Serialize an informational response head.
     ///
     /// Args:
-    ///     status_code: A status in the range 100 through 199.
-    ///     headers: Optional iterable of `(name, value)` pairs.
-    ///     reason: Optional reason phrase.
-    ///     http_version: `b"1.1"` (default) or `b"1.0"`.
+    ///     status_code (int): A status in the range 100 through 199.
+    ///     headers (Iterable | None): Optional `(name, value)` pairs. Each item
+    ///         accepts ASCII `str`, `bytes`, `bytearray`, or `memoryview`.
+    ///     reason (str | bytes | bytearray | memoryview | None): Optional ASCII
+    ///         reason phrase.
+    ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
+    ///         (default) or `b"1.0"`.
     ///
     /// Returns:
-    ///     Bytes for the caller to write to the transport.
+    ///     wire_bytes (bytes): Bytes for the caller to write to the transport.
     ///
     /// Raises:
     ///     TypeError: If a header is not a two-item tuple or an input is not
@@ -532,13 +566,16 @@ impl PyConnection {
     /// Serialize a final response head.
     ///
     /// Args:
-    ///     status_code: A status in the range 200 through 599.
-    ///     headers: Optional iterable of `(name, value)` pairs.
-    ///     reason: Optional reason phrase.
-    ///     http_version: `b"1.1"` (default) or `b"1.0"`.
+    ///     status_code (int): A status in the range 200 through 599.
+    ///     headers (Iterable | None): Optional `(name, value)` pairs. Each item
+    ///         accepts ASCII `str`, `bytes`, `bytearray`, or `memoryview`.
+    ///     reason (str | bytes | bytearray | memoryview | None): Optional ASCII
+    ///         reason phrase.
+    ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
+    ///         (default) or `b"1.0"`.
     ///
     /// Returns:
-    ///     Bytes for the caller to write to the transport.
+    ///     wire_bytes (bytes): Bytes for the caller to write to the transport.
     ///
     /// Raises:
     ///     TypeError: If a header is not a two-item tuple or an input is not
@@ -569,10 +606,11 @@ impl PyConnection {
     /// Serialize body data into one bytes object.
     ///
     /// Args:
-    ///     data: Body bytes as `bytes`, `bytearray`, or `memoryview`.
+    ///     data (bytes | bytearray | memoryview): Body bytes.
     ///
     /// Returns:
-    ///     Framed bytes for the caller to write to the transport.
+    ///     wire_bytes (bytes): Framed bytes for the caller to write to the
+    ///         transport.
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
@@ -589,10 +627,11 @@ impl PyConnection {
     /// three writes complete.
     ///
     /// Args:
-    ///     data: Contiguous `bytes`, `bytearray`, or `memoryview` body.
+    ///     data (bytes | bytearray | memoryview): Contiguous body buffer.
     ///
     /// Returns:
-    ///     Framing prefix, the identical input object, and framing suffix.
+    ///     parts (tuple[bytes, bytes | bytearray | memoryview, bytes]): Framing
+    ///         prefix, the identical input object, and framing suffix.
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
@@ -618,10 +657,12 @@ impl PyConnection {
     /// trailers. Extension trailer fields remain the caller's responsibility.
     ///
     /// Args:
-    ///     trailers: Optional iterable of trailer `(name, value)` pairs.
+    ///     trailers (Iterable | None): Optional `(name, value)` pairs. Each item
+    ///         accepts ASCII `str`, `bytes`, `bytearray`, or `memoryview`.
     ///
     /// Returns:
-    ///     Message terminator bytes for the caller to write to the transport.
+    ///     wire_bytes (bytes): Message terminator bytes for the caller to write
+    ///         to the transport.
     ///
     /// Raises:
     ///     TypeError: If a trailer is not a two-item tuple or an input is not

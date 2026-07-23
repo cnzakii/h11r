@@ -13,7 +13,8 @@ protocol behavior, or making a substantial design change. Small bug fixes and
 documentation improvements can go directly to a pull request.
 
 Security vulnerabilities must be reported according to
-[SECURITY.md](SECURITY.md), not through a public issue.
+[the security policy ↗](https://github.com/cnzakii/h11r/blob/main/SECURITY.md),
+not through a public issue.
 
 ## Development Setup
 
@@ -62,11 +63,14 @@ Keep each pull request focused on one problem. In particular:
 - update Python runtime exports, type stubs, and tests together when changing
   the Python API;
 - update Rust documentation and tests when changing the Rust API;
+- keep the README, runnable examples, and public site aligned when they explain
+  the same user path;
 - include reproducible measurements for performance claims;
 - justify new dependencies and new public surface;
 - keep documentation-only changes free of unrelated code changes.
 
-Documentation-only changes do not require a new test.
+Documentation-only changes do not require a new behavioral test, but the
+strict documentation build must pass.
 
 ## Running Checks
 
@@ -82,6 +86,13 @@ For focused iteration, use:
 make lint
 make test-rust
 make test-python
+make docs
+```
+
+Preview the documentation site at `http://localhost:8000` while editing:
+
+```console
+make docs-serve
 ```
 
 Select a free-threaded interpreter explicitly when checking that support
@@ -94,7 +105,11 @@ UV_PYTHON=3.14t make test-python
 
 Use `3.15t` in the same commands to exercise the prerelease interpreter.
 
-The complete GitHub Actions matrix runs after the pull request is opened.
+Code changes run the supported Python and platform matrix in GitHub Actions.
+Relevant documentation changes run the strict documentation build separately.
+Mixed changes run both. Branch protection requires only the final
+`Required checks` job; individual matrix jobs may be skipped when they are not
+affected by a pull request.
 
 ## Performance Changes
 
@@ -130,7 +145,8 @@ A pull request should:
 - pass `make check` and the GitHub Actions checks.
 
 By contributing, you agree that your contribution is licensed under the
-project's [MIT License](LICENSE).
+project's
+[MIT License ↗](https://github.com/cnzakii/h11r/blob/main/LICENSE).
 
 ## Releases
 
@@ -158,12 +174,32 @@ git push origin vX.Y.Z
 
 The tag starts the release workflow. After approval of the `release`
 environment, GitHub Actions publishes the Python distributions to PyPI and the
-Rust crate to crates.io, then creates the GitHub Release.
+Rust crate to crates.io, creates the GitHub Release, and publishes the
+documentation.
 
-Before the first automated release, configure the PyPI trusted publisher and
-the GitHub `release` environment. crates.io requires the first crate version to
-be published manually with `cargo publish -p h11r --locked`; configure its
-trusted publisher after that first publication.
+Documentation has three kinds of address:
+
+- `/dev/` follows documentation-relevant changes on `main`;
+- `/X.Y/` is built from the corresponding release tag, and patch releases
+  update the same version line;
+- `latest` points to the greatest published `X.Y` line, and the site root
+  redirects there. When no release documentation exists, it falls back to
+  `/dev/`.
+
+Pull requests only build affected documentation. A release moves `latest` only
+when its stable version is the greatest stable tag, so a maintenance release
+for an older line cannot move the default documentation backwards.
+
+Configure the repository's GitHub Pages source as **GitHub Actions**.
+
+To republish the latest patch in a version line from a release tag that
+contains the site configuration, run the reusable documentation workflow
+manually:
+
+```console
+gh workflow run publish-docs.yml \
+  --ref vX.Y.Z
+```
 
 ### Recovering a Partial Release
 

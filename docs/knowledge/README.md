@@ -1,13 +1,14 @@
 ---
 title: Protocol engineering knowledge
-description: Source-based reference material for protocol, testing, architecture, and Python/Rust engineering.
+description: Source-based reference material for protocol, testing, architecture, documentation, tooling, and Python/Rust engineering.
 topics: [index]
 ---
 
 # Protocol Engineering Knowledge
 
 This collection is a source-based reference library for protocol engineering,
-testing, architecture, language conventions, and mixed Python/Rust packaging.
+testing, architecture, documentation, tooling, language conventions, and mixed
+Python/Rust packaging.
 
 It does not contain product code, project audits, implementation plans,
 benchmark results, release decisions, or recommendations for a particular
@@ -37,11 +38,14 @@ Documents distinguish five kinds of material:
   [tool operations](testing/tools.md)
 - Engineering: [quality](engineering/quality.md),
   [language and API conventions](engineering/language-api.md),
-  [dependency and license evidence](engineering/dependency-licenses.md), and
+  [technical documentation practice](engineering/documentation-practice.md),
+  [technical documentation localization](engineering/documentation-localization.md),
+  [dependency and license evidence](engineering/dependency-licenses.md),
   [state-machine design](engineering/state-machine-design.md), and
   [continuous integration and dependency automation](engineering/continuous-integration.md)
 - Python/Rust: [extension boundaries](python-rust/boundary.md) and
   [tooling](python-rust/tooling.md)
+- Tooling: [Zensical documentation tooling](tooling/zensical.md)
 
 ## Freshness
 

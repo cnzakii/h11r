@@ -1,4 +1,4 @@
-//! Sans-I/O HTTP/1.1 connection engine.
+//! Sans-I/O HTTP/1.1 library.
 //!
 //! [`Connection`] owns protocol state and buffering but performs no socket I/O.
 //! Pass received bytes to [`Connection::receive_data`], poll [`Event`] values
