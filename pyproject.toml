@@ -23,6 +23,13 @@ benchmark = [
     "pyperf>=2.10,<3",
 ]
 
+# Public site generation and Python API reference.
+docs = [
+    "mike @ git+https://github.com/squidfunk/mike.git",
+    "mkdocstrings-python==2.0.5",
+    "zensical==0.0.51",
+]
+
 [tool.uv]
 package = false
 

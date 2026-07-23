@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://github.com/cnzakii/h11r/raw/refs/heads/main/docs/assets/h11r.svg" width="144" height="144" alt="h11r logo">
+  <img src="https://github.com/cnzakii/h11r/raw/refs/heads/main/docs/site/assets/h11r.svg" width="144" height="144" alt="h11r logo">
 </p>
 
 <h1 align="center">h11r</h1>
 
 <p align="center">
-  <strong>A <a href="https://sans-io.readthedocs.io/">Sans-I/O</a> HTTP/1.1 protocol engine for Python, powered by Rust.</strong>
+  <strong>A fast, typed <a href="https://sans-io.readthedocs.io/">Sans-I/O</a> HTTP/1.1 library for Python.</strong>
 </p>
 
 <p align="center">
@@ -19,33 +19,31 @@
   <a href="https://github.com/cnzakii/h11r/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-`h11r` translates between bytes and HTTP events. It handles message framing,
-connection state, and protocol errors without reading from or writing to the
-network. Connect it to synchronous sockets, asyncio, Trio, or any other
-transport that can move bytes.
+`h11r` is a low-level HTTP/1.1 library for Python applications that already own
+their network I/O. Its send methods produce wire bytes; received peer bytes
+become immutable Python events. The library enforces message framing,
+connection state, and protocol errors while your code keeps control of the
+transport, runtime, and application policy.
 
-The protocol core is an independent Rust crate exposed as a typed Python
-package through PyO3. Its connection model is inspired by
-[`h11`](https://github.com/python-hyper/h11), while request, response, and
-trailer head parsing is built on
-[`httparse`](https://github.com/seanmonstar/httparse).
+Use it to build HTTP/1.1 clients, servers, proxies, protocol adapters, or test
+tools. It is not a ready-made HTTP client that opens connections and sends
+requests for you.
 
-> `h11r` is currently alpha software. Its public API may change before the
-> first stable release.
+> `h11r` is currently alpha software. Its public API may change during alpha
+> development.
 
-## Performance
+## Why h11r
 
-![Python benchmark comparing h11r and h11][benchmark-chart]
-
-The chart compares protocol-layer throughput for `h11r` and `h11 0.16.0`
-across five equivalent Python HTTP/1.1 workloads that reuse their connections.
-Each workload uses public APIs and includes protocol state transitions. It does
-not include socket, TLS, or asynchronous runtime overhead. Higher is faster.
-
-The results were produced by the [`pyperf` benchmark][benchmark-script]. The
-[raw pyperf result][benchmark-results] used to render the chart is included for
-reproduction and inspection. The measurement environment is recorded in the
-chart. Results will vary with hardware and Python version.
+- **Low protocol-layer overhead.** The checked-in benchmarks show higher
+  throughput than `h11` across five equivalent HTTP/1.1 workloads.
+  [See the results.](#performance)
+- **A Python-native, typed API.** Work with immutable event objects, Python
+  exceptions, and precise type information in editors and type checkers.
+- **Your transport and runtime.** The library does not choose sockets,
+  TLS, concurrency, cancellation, or back-pressure policy.
+- **More control when you need it.** Start with ordinary request and response
+  bytes, then opt into streaming bodies, buffer-preserving writes, pipelining,
+  or protocol handoff.
 
 ## Quick Start
 
@@ -61,63 +59,94 @@ Or install it with pip:
 pip install h11r
 ```
 
-This server-side example parses one request and produces a complete response.
-The caller remains responsible for network I/O.
+Create a client-role connection, serialize one bodyless request, and parse a
+complete response:
 
 ```python
 import h11r
 
-connection = h11r.Connection(h11r.Role.SERVER)
+client = h11r.Connection(h11r.Role.CLIENT)
+request_bytes = client.send_request(
+    "GET",
+    "/hello",
+    [("Host", "example.test")],
+)
+request_bytes += client.end_of_message()
 
-# Bytes received from any synchronous or asynchronous transport.
-connection.receive_data(
-    b"POST /echo HTTP/1.1\r\n"
-    b"Host: example.com\r\n"
-    b"Content-Length: 4\r\n"
+client.receive_data(
+    b"HTTP/1.1 200 OK\r\n"
+    b"Content-Length: 17\r\n"
     b"\r\n"
-    b"ping"
+    b"Hello from h11r!\n"
 )
 
-request = None
-body = bytearray()
+status_code = None
+response_body = bytearray()
 
-# Drain every event already available from the received bytes.
 while True:
-    event = connection.next_event()
-    if isinstance(event, h11r.Request):
-        request = event
-    elif isinstance(event, h11r.Data):
-        body.extend(event.data)
-    elif isinstance(event, h11r.EndOfMessage):
-        if request is None:
-            raise RuntimeError("request ended before its Request event")
-        break
-    elif event is h11r.ReceiveStatus.NEED_DATA:
-        raise RuntimeError("the request is incomplete")
-    else:
-        raise RuntimeError(f"unexpected request event: {event!r}")
+    event = client.next_event()
 
-# Echo the request body and write every returned byte to the same transport.
-response_body = bytes(body)
-outbound = connection.send_response(
-    200,
-    [("Content-Length", str(len(response_body)))],
-    reason="OK",
-)
-outbound += connection.send_data(response_body)
-outbound += connection.end_of_message()
+    match event:
+        case h11r.Response(status_code=code):
+            status_code = code
+        case h11r.Data(data=chunk):
+            response_body.extend(chunk)
+        case h11r.EndOfMessage():
+            break
+
+print(status_code, bytes(response_body))
 ```
 
-See the [runnable Python examples][python-examples] for complete round-trip,
-streaming body, pipelining, zero-copy body, WebSocket Upgrade, and asyncio
-server lessons.
+Output:
 
-## A Protocol Component, Not an HTTP Client
+```text
+200 b'Hello from h11r!\n'
+```
 
-`h11r` does not open sockets, choose a concurrency model, or handle TLS,
-connection pooling, redirects, cookies, or routing. It maintains the protocol
-state of one HTTP/1.1 connection while higher-level clients, servers, proxies,
-and test tools decide how to schedule I/O.
+In a real client, your transport writes `request_bytes` and supplies each read
+to `receive_data()`. The [first tutorial][first-client-guide] keeps the same
+client-side flow and makes that boundary visible before adding a socket.
+
+## Learn and Integrate
+
+- Start with the [first client tutorial][first-client-guide], which serializes a
+  request and parses a simulated response.
+- Continue with the [client/server round trip][round-trip-guide] to move bytes
+  through a real local stream and reuse the connection.
+- Read the [protocol model][protocol-model] before connecting `h11r` to your own
+  [transport adapter][integration-guide].
+- Use [advanced patterns][advanced-guide] only when you need streaming,
+  buffer-preserving writes, pipelining, or protocol handoff.
+
+Use the runnable examples when you need a specific integration:
+
+| Goal | Example |
+| --- | --- |
+| Process a body incrementally and validate trailers | [`streaming_body.py`][streaming-example] |
+| Preserve response order for pipelined requests | [`pipelining.py`][pipelining-example] |
+| Avoid copying a caller-owned body buffer inside `h11r` | [`zero_copy_body.py`][zero-copy-example] |
+| Hand a successful WebSocket Upgrade to `wsproto` | [`websocket_upgrade.py`][upgrade-example] |
+| Build a complete teaching server with `asyncio` streams | [`asyncio_server.py`][asyncio-example] |
+
+## Performance
+
+![Python benchmark comparing h11r and h11][benchmark-chart]
+
+The chart compares protocol-layer throughput for `h11r` and `h11 0.16.0`
+across five equivalent Python HTTP/1.1 workloads that reuse their connections.
+Each workload uses public APIs and includes protocol state transitions. It does
+not include socket, TLS, or asynchronous runtime overhead. Higher is faster.
+
+The results were produced by the [`pyperf` benchmark][benchmark-script]. The
+[raw pyperf result][benchmark-results] used to render the chart is included for
+reproduction and inspection. The measurement environment is recorded in the
+chart. Results will vary with hardware and Python version.
+
+## Scope and compatibility
+
+Each `Connection` maintains one endpoint's view of an HTTP/1.1 connection.
+Higher-level clients, servers, proxies, and test tools decide how to schedule
+I/O and apply application policy.
 
 It supports client and server roles, HTTP/1.0 peers, `Content-Length` and
 chunked framing, keep-alive cycles, informational responses, trailers, and
@@ -127,22 +156,26 @@ errors.
 
 The Python package supports GIL-enabled CPython 3.10 through 3.14 and
 free-threaded CPython 3.14t. CI also exercises CPython 3.15 and 3.15t while
-they are prereleases. Independent `Connection` instances may run in parallel.
-Operations on one connection still have protocol order and must be serialized
-by its caller.
+they are prereleases. Independent `Connection` instances may run
+in parallel. Operations on one connection still have protocol order and must
+be serialized by its caller.
 
-## Acknowledgements
+## Relationship to h11
 
-`h11r` follows the [Sans-I/O][sans-io] approach of keeping protocol state
-separate from network I/O. Its connection lifecycle and event model are
-inspired by [`h11`](https://github.com/python-hyper/h11). It is not a drop-in
-replacement for `h11`; it is a Rust-powered Python implementation built in the
-same tradition.
+`h11r` follows the Sans-I/O connection and event model established by
+[`h11`](https://github.com/python-hyper/h11), but it does not depend on `h11`
+at runtime and is not a drop-in replacement. Its Python API keeps familiar
+roles, events, and connection cycles while using dedicated send methods and
+its own types.
 
-Low-level HTTP head parsing is provided by
-[`httparse`](https://github.com/seanmonstar/httparse). `h11r` owns the full
-message framing, connection state machine, resource boundaries, and Python
-API.
+The Rust core uses [`httparse`](https://github.com/seanmonstar/httparse) for
+request and response heads and trailer fields. `h11r` implements framing,
+buffering and resource limits, wire serialization, and its public Rust and
+Python APIs.
+
+Interoperability tests exercise both `h11r`-client/`h11`-server and
+`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. `h11` remains
+a mature pure-Python library with its own established API and ecosystem.
 
 ## Contributing
 
@@ -155,6 +188,14 @@ MIT
 [benchmark-chart]: https://raw.githubusercontent.com/cnzakii/h11r/main/docs/assets/python-benchmark.svg
 [benchmark-results]: https://github.com/cnzakii/h11r/blob/main/docs/assets/python-benchmark.json
 [benchmark-script]: https://github.com/cnzakii/h11r/blob/main/crates/h11r-python/benchmarks/compare_h11.py
+[first-client-guide]: https://cnzakii.github.io/h11r/latest/getting-started/
+[round-trip-guide]: https://cnzakii.github.io/h11r/latest/round-trip/
+[streaming-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/streaming_body.py
+[pipelining-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/pipelining.py
+[zero-copy-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/zero_copy_body.py
+[upgrade-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/websocket_upgrade.py
+[asyncio-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/asyncio_server.py
+[protocol-model]: https://cnzakii.github.io/h11r/latest/concepts/
+[integration-guide]: https://cnzakii.github.io/h11r/latest/integration/
+[advanced-guide]: https://cnzakii.github.io/h11r/latest/advanced/
 [contributing-guide]: https://github.com/cnzakii/h11r/blob/main/CONTRIBUTING.md
-[python-examples]: https://github.com/cnzakii/h11r/tree/main/examples
-[sans-io]: https://sans-io.readthedocs.io/

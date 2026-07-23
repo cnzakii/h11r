@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block outdated %}
+  <div class="version-notice">
+    <strong>Not the latest stable documentation</strong>
+    <span>This version may differ from the package installed from PyPI.</span>
+    <a href="{{ '../' ~ base_url }}">View latest stable</a>
+  </div>
+{% endblock %}

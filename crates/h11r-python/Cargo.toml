@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Python bindings for the h11r protocol engine"
+description = "Python bindings for the h11r library"
 repository = "https://github.com/cnzakii/h11r"
 
 [lib]

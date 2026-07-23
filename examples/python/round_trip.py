@@ -2,7 +2,7 @@
 
 This example keeps a client and a server in one process so the complete flow is
 visible in one file. ``socket.socketpair()`` supplies the transport; h11r only
-translates between HTTP events and bytes.
+turns send calls into wire bytes and received bytes into HTTP events.
 
 A real client and server would own separate sockets and would also need timeout,
 cancellation, logging, and application-specific error handling.
@@ -24,7 +24,7 @@ def next_event(connection: h11r.Connection, transport: socket.socket) -> object:
 
         if event is h11r.ReceiveStatus.NEED_DATA:
             # recv() returning b"" means EOF. Passing that empty value to h11r
-            # lets the protocol engine produce ConnectionClosed or report a
+            # lets the connection produce ConnectionClosed or report a
             # truncated message instead of silently losing the close event.
             connection.receive_data(transport.recv(64 * 1024))
             continue

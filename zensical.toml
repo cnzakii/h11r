@@ -1,0 +1,138 @@
+[project]
+# Public site identity.
+site_name = "h11r"
+site_description = "A fast, typed Sans-I/O HTTP/1.1 library for Python."
+site_author = "h11r contributors"
+site_url = "https://cnzakii.github.io/h11r/"
+copyright = "Copyright &copy; 2026 h11r contributors"
+extra_css = ["stylesheets/extra.css"]
+
+# Only docs/site is published. docs/knowledge remains an engineering reference.
+docs_dir = "docs/site"
+site_dir = "site"
+
+# Repository metadata shown by the theme.
+repo_url = "https://github.com/cnzakii/h11r"
+repo_name = "cnzakii/h11r"
+
+# Lead new readers from one client-side success to a complete protocol model.
+nav = [
+    { "Overview" = "index.md" },
+    { "Learn h11r" = [
+        { "First client request" = "getting-started.md" },
+        { "Client/server round trip" = "round-trip.md" },
+        { "Understand the model" = "concepts.md" },
+    ] },
+    { "Use h11r" = [
+        { "Transport adapter" = "integration.md" },
+        { "Advanced usage" = "advanced.md" },
+        { "Python API" = "api.md" },
+    ] },
+    { "Project" = [
+        { "Changelog" = "changelog.md" },
+        { "Contributing" = "contributing.md" },
+        { "Security" = "security.md" },
+        { "License" = "license.md" },
+    ] },
+]
+
+# mike supplies release aliases and the version selector on deployed sites.
+[project.extra.version]
+provider = "mike"
+# The site root and version warnings follow the managed latest alias.
+default = "latest"
+alias = true
+
+[project.theme]
+language = "en"
+logo = "assets/h11r.svg"
+favicon = "assets/h11r.svg"
+custom_dir = "docs/overrides"
+features = [
+    "content.code.copy",
+    "navigation.footer",
+    "navigation.instant",
+    "navigation.instant.progress",
+    "navigation.path",
+    "navigation.sections",
+    "navigation.top",
+    "navigation.tracking",
+    "search.highlight",
+    "toc.follow",
+]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+# Markdown features used by the authored pages.
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.md_in_html]
+
+[project.markdown_extensions.zensical.extensions.macros]
+on_error_fail = true
+on_undefined = "strict"
+
+[project.markdown_extensions.toc]
+permalink = true
+
+[project.markdown_extensions.pymdownx.details]
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+
+[project.markdown_extensions.pymdownx.inlinehilite]
+
+[project.markdown_extensions.pymdownx.snippets]
+# Include the canonical project files without maintaining copies in docs/site.
+base_path = [
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE",
+    "examples/python/first_client.py",
+    "target/docs/python-benchmark.md",
+]
+check_paths = true
+
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+
+# Generate reference from the installed public Python package.
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["crates/h11r-python/python"]
+inventories = ["https://docs.python.org/3/objects.inv"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+filters = ["!^_"]
+
+# h11r._core is a compiled PyO3 module, so its docstrings require inspection.
+force_inspection = true
+members_order = "source"
+separate_signature = true
+show_signature_annotations = true
+show_root_full_path = false
+show_root_heading = true
+show_if_no_docstring = false
+show_labels = false
+show_source = false
+
+[project.plugins.mkdocstrings.handlers.python.options.docstring_options]
+# Exact annotations remain available in the package's published .pyi files.
+warn_missing_types = false
+warn_unknown_params = false

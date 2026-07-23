@@ -6,8 +6,8 @@ Run it from the repository root, then send requests from another terminal::
     curl -v http://127.0.0.1:8080/
     curl -v --data-binary 'hello' http://127.0.0.1:8080/echo
 
-The example demonstrates the integration work around a Sans-I/O protocol
-engine: asynchronous reads and writes, back-pressure, EOF, request bodies,
+The example demonstrates the integration work around a Sans-I/O library:
+asynchronous reads and writes, back-pressure, EOF, request bodies,
 ``100 Continue``, keep-alive, pipelining boundaries, timeouts, protocol errors,
 and orderly transport shutdown.
 
@@ -56,7 +56,7 @@ class AsyncHTTPConnection:
                 return event
 
             # wait_for supplies an idle-read timeout without coupling h11r to
-            # asyncio. The protocol engine itself has no clock or scheduler.
+            # asyncio. The h11r connection itself has no clock or scheduler.
             data = await asyncio.wait_for(
                 self.reader.read(READ_SIZE),
                 timeout=READ_TIMEOUT,

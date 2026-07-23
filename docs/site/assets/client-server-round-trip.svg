@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 210" role="img" aria-labelledby="title description">
+  <title id="title">A complete h11r client and server round trip</title>
+  <desc id="description">Independent client and server connections exchange request and response bytes through a caller-owned byte stream.</desc>
+
+  <defs>
+    <marker id="request-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C94822"/>
+    </marker>
+    <marker id="response-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#31699F"/>
+    </marker>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, monospace; }
+      .heading { fill: #241A16; font-size: 18px; font-weight: 700; }
+      .detail { fill: #665D56; font-size: 13px; }
+      .request { fill: #8D341B; font-size: 13px; font-weight: 650; }
+      .response { fill: #2C5480; font-size: 13px; font-weight: 650; }
+      .stream { fill: #665D56; font-size: 13px; }
+    </style>
+  </defs>
+
+  <rect width="520" height="210" rx="14" fill="#FCFAF6"/>
+
+  <g class="sans">
+    <rect x="15" y="55" width="190" height="100" rx="12" fill="#F6EEDF" stroke="#E4622C" stroke-width="2"/>
+    <text class="heading" x="110" y="94" text-anchor="middle">Client connection</text>
+    <text class="detail mono" x="110" y="127" text-anchor="middle">Role.CLIENT</text>
+
+    <rect x="315" y="55" width="190" height="100" rx="12" fill="#F6EEDF" stroke="#E4622C" stroke-width="2"/>
+    <text class="heading" x="410" y="94" text-anchor="middle">Server connection</text>
+    <text class="detail mono" x="410" y="127" text-anchor="middle">Role.SERVER</text>
+
+    <text class="request" x="260" y="72" text-anchor="middle">request bytes</text>
+    <path d="M 210 88 H 310" fill="none" stroke="#C94822" stroke-width="3" marker-end="url(#request-arrow)"/>
+
+    <text class="stream" x="260" y="119" text-anchor="middle">caller-owned</text>
+    <text class="stream" x="260" y="137" text-anchor="middle">byte stream</text>
+
+    <path d="M 310 151 H 210" fill="none" stroke="#31699F" stroke-width="3" marker-end="url(#response-arrow)"/>
+    <text class="response" x="260" y="174" text-anchor="middle">response bytes</text>
+  </g>
+</svg>

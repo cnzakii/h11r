@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" role="img" aria-labelledby="title description">
+  <title id="title">The h11r Sans-I/O boundary</title>
+  <desc id="description">The application calls h11r send methods and receives parsed events. h11r returns bytes to a caller-owned transport and accepts bytes read by that transport. The transport performs network input and output with the peer.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .node { fill: #241A16; font-size: 19px; font-weight: 700; }
+      .h11r { fill: #A83B1C; }
+      .detail { fill: #665D56; font-size: 13px; }
+      .label { fill: #5E5650; font-size: 13px; font-weight: 650; }
+      .application-flow { fill: none; stroke: #A83B1C; stroke-width: 2.5; }
+      .transport-flow { fill: none; stroke: #31699F; stroke-width: 2.5; }
+      .network-flow { fill: none; stroke: #6B625C; stroke-width: 2.5; }
+    </style>
+  </defs>
+
+  <rect width="720" height="320" rx="16" fill="#FCFAF6"/>
+
+  <g class="sans" text-anchor="middle">
+    <rect x="20" y="20" width="250" height="100" rx="12" fill="#F2F6FA" stroke="#B9CCDD" stroke-width="2"/>
+    <text class="node" x="145" y="62">Application</text>
+    <text class="detail" x="145" y="89">HTTP policy and lifecycle</text>
+
+    <rect x="450" y="20" width="250" height="100" rx="12" fill="#F6EEDF" stroke="#E4622C" stroke-width="2"/>
+    <text class="node h11r" x="575" y="62">h11r</text>
+    <text class="detail" x="575" y="89">HTTP/1.1 state and framing</text>
+
+    <path class="application-flow" d="M 275 50 H 445" marker-end="url(#arrow)"/>
+    <text class="label" x="360" y="39">send_*() calls</text>
+
+    <path class="application-flow" d="M 445 94 H 275" marker-end="url(#arrow)"/>
+    <text class="label" x="360" y="114">parsed events</text>
+
+    <rect x="450" y="210" width="250" height="90" rx="12" fill="#F2F6FA" stroke="#B9CCDD" stroke-width="2"/>
+    <text class="node" x="575" y="249">Transport</text>
+    <text class="detail" x="575" y="276">caller-owned socket or stream</text>
+
+    <path class="transport-flow" d="M 540 125 V 205" marker-end="url(#arrow)"/>
+    <path class="transport-flow" d="M 610 205 V 125" marker-end="url(#arrow)"/>
+    <text class="label" x="520" y="169" text-anchor="end">returned bytes</text>
+    <text class="label" x="630" y="169" text-anchor="start">received bytes</text>
+
+    <rect x="20" y="210" width="250" height="90" rx="12" fill="#F7F3EC" stroke="#D8CCBC" stroke-width="2"/>
+    <text class="node" x="145" y="249">Network peer</text>
+    <text class="detail" x="145" y="276">remote endpoint</text>
+
+    <path class="network-flow" d="M 275 255 H 445" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="360" y="242">network I/O</text>
+  </g>
+</svg>

@@ -18,8 +18,35 @@ env:
   TY_OUTPUT_FORMAT: github
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.paths.outputs.code }}
+      docs: ${{ steps.paths.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify affected checks
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          sh .github/scripts/classify-changes.sh --self-test
+          if [[ "$GITHUB_EVENT_NAME" = pull_request ]]; then
+            range="$BASE_SHA...$GITHUB_SHA"
+          else
+            range="$BASE_SHA..$GITHUB_SHA"
+          fi
+          git diff --name-only "$range" |
+            sh .github/scripts/classify-changes.sh >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint and static analysis
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -34,6 +61,8 @@ jobs:
 
   rust:
     name: Rust stable
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -44,6 +73,8 @@ jobs:
 
   msrv:
     name: Rust 1.88 (MSRV)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,6 +85,8 @@ jobs:
 
   python:
     name: Python ${{ matrix.python-version }}${{ matrix.preview && ' preview' || '' }} on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -95,6 +128,8 @@ jobs:
 
   coverage:
     name: Coverage
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # OIDC authenticates Codecov without a stored upload secret. Codecov's
     # GitHub App must be connected before the first upload.
@@ -124,3 +159,52 @@ jobs:
           fail_ci_if_error: false
           files: rust.lcov,coverage.xml
           use_oidc: true
+
+  documentation:
+    name: Build documentation
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --locked
+      - run: make docs
+
+  publish-documentation:
+    name: Publish development documentation
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.docs == 'true'
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish-docs.yml
+
+  required:
+    name: Required checks
+    if: always()
+    needs:
+      - changes
+      - lint
+      - rust
+      - msrv
+      - python
+      - coverage
+      - documentation
+      - publish-documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful affected checks
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

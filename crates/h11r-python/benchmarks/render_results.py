@@ -20,17 +20,17 @@ SCENARIOS = (
 
 def load_results(path: Path) -> tuple[list[tuple[str, float, float]], str]:
     suite = pyperf.BenchmarkSuite.load(str(path))
+    metadata = suite.get_metadata()
     means = {benchmark.get_name(): benchmark.mean() for benchmark in suite}
     rows = []
     for key, label in SCENARIOS:
         try:
             h11r = means[f"scenario/{key}/h11r"]
-            h11 = means[f"scenario/{key}/h11-0.16.0"]
+            h11 = means[f"scenario/{key}/h11-{metadata['h11_version']}"]
         except KeyError as error:
             raise ValueError(f"missing benchmark: {error.args[0]}") from None
         rows.append((label, h11r, h11))
 
-    metadata = suite.get_metadata()
     _, finished = suite.get_dates()
     versions = [
         f"h11r {metadata['h11r_version']}",
@@ -77,7 +77,7 @@ def render_svg(rows: list[tuple[str, float, float]], details: str) -> str:
         '<text class="primary" x="40" y="58" font-size="25" font-weight="500" '
         'letter-spacing="-0.4">Relative throughput by scenario</text>',
         '<text class="secondary" x="40" y="83" font-size="13">'
-        "h11 0.16.0 = 1.00× · higher is faster</text>",
+        "h11 = 1.00× · higher is faster</text>",
     ]
 
     for index in range(5):
@@ -127,7 +127,7 @@ def render_svg(rows: list[tuple[str, float, float]], details: str) -> str:
 
 def render_table(rows: list[tuple[str, float, float]], details: str) -> str:
     lines = [
-        "| Scenario | h11r (µs/op) | h11 0.16.0 (µs/op) | Relative throughput |",
+        "| Scenario | h11r (µs/op) | h11 (µs/op) | Relative throughput |",
         "| --- | ---: | ---: | ---: |",
     ]
     for label, h11r, h11 in rows:

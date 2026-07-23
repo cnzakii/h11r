@@ -24,6 +24,8 @@ the repository boundaries in `AGENTS.md`.
 5. Implement the smallest coherent design. Update all affected layers required
    for correctness, including Python exports, stubs, and tests when their
    contract changes.
+   Treat the README, runnable examples, and `docs/site` as coordinated public
+   entry points, and reuse canonical content instead of maintaining copies.
 6. Add the smallest check that would fail for a changed behavior. Match evidence
    to the claim: focused tests for behavior, interoperability for real peers,
    fuzzing for hostile input/state exploration, and benchmarks for performance.
