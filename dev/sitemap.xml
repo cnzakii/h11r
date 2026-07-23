@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/getting-started/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/round-trip/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/concepts/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/integration/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/advanced/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/api/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/changelog/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/contributing/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/security/</loc>
+      </url>
+      <url>
+        <loc>https://cnzakii.github.io/h11r/dev/license/</loc>
+      </url>
+</urlset>
