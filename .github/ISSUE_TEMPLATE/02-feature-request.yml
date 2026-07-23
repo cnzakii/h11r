@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an improvement within h11r's HTTP/1.1 Sans-I/O scope
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        h11r owns HTTP/1.1 protocol state and framing. Socket, TLS, async runtime, client, server, and connection-pool behavior remain outside the library.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Describe the problem you are trying to solve and why existing behavior is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the API or behavior you would like, with a short example when useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Note any workarounds or designs you considered.
+    validations:
+      required: false
