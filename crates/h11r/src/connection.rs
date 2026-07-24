@@ -25,6 +25,22 @@ impl RequestKind {
     }
 }
 
+/// Owned poll outcome. Body bytes are described by count and only borrowed
+/// from the input buffer in `next_event`, after error bookkeeping that needs
+/// the connection mutably.
+enum Polled {
+    /// Any event except `Event::Data`.
+    Event(Event<'static>),
+    /// The next `count` input bytes are decoded body data.
+    Data {
+        count: usize,
+        chunk_start: bool,
+        chunk_end: bool,
+    },
+    NeedData,
+    Paused,
+}
+
 /// One Sans-I/O HTTP/1 connection.
 ///
 /// The connection owns the client and server protocol states, input buffering,
@@ -124,36 +140,47 @@ impl Connection {
     ///
     /// Returns [`RemoteProtocolError`] if the peer input violates HTTP syntax,
     /// framing, configured limits, or the current protocol state.
-    pub fn next_event(&mut self) -> Result<NextEvent, RemoteProtocolError> {
-        let result = self.next_event_inner().map_err(|mut error| {
+    pub fn next_event(&mut self) -> Result<NextEvent<'_>, RemoteProtocolError> {
+        let polled = self.next_event_inner().map_err(|mut error| {
             if self.role == Role::Client {
                 error.suggested_status_code = None;
             }
-            error
-        });
-        if result.is_err() {
             self.state.process_error(self.role.peer());
-        }
-        result
+            error
+        })?;
+        Ok(match polled {
+            Polled::Event(event) => NextEvent::Event(event),
+            Polled::Data {
+                count,
+                chunk_start,
+                chunk_end,
+            } => NextEvent::Event(Event::Data(Data {
+                data: self.input.take(count),
+                chunk_start,
+                chunk_end,
+            })),
+            Polled::NeedData => NextEvent::NeedData,
+            Polled::Paused => NextEvent::Paused,
+        })
     }
 
-    fn next_event_inner(&mut self) -> Result<NextEvent, RemoteProtocolError> {
+    fn next_event_inner(&mut self) -> Result<Polled, RemoteProtocolError> {
         match self.peer_state() {
-            State::Closed => return Ok(NextEvent::Event(Event::ConnectionClosed)),
+            State::Closed => return Ok(Polled::Event(Event::ConnectionClosed)),
             State::Idle if self.eof && self.input.as_slice().is_empty() => {
                 return self.peer_closed();
             }
             State::MightSwitchProtocol | State::SwitchedProtocol => {
-                return Ok(NextEvent::Paused);
+                return Ok(Polled::Paused);
             }
             State::Done | State::MustClose if !self.input.as_slice().is_empty() => {
-                return Ok(NextEvent::Paused);
+                return Ok(Polled::Paused);
             }
             State::Done | State::MustClose => {
                 if self.eof {
                     return self.peer_closed();
                 }
-                return Ok(NextEvent::NeedData);
+                return Ok(Polled::NeedData);
             }
             State::Error => return Err(remote("peer state is ERROR", None)),
             _ => {}
@@ -168,19 +195,17 @@ impl Connection {
                     return self.need_data_or_eof("unexpected EOF in Content-Length body");
                 }
                 self.reader = Reader::Fixed(remaining - count);
-                let data = self.input.take(count);
-                self.peer_data(data, false, false)
+                self.peer_data(count, false, false)
             }
             Reader::CloseDelimited => {
                 let count = self.input.as_slice().len();
                 if count > 0 {
-                    let data = self.input.take(count);
-                    return self.peer_data(data, false, false);
+                    return self.peer_data(count, false, false);
                 }
                 if self.eof {
                     return self.finish_peer(Vec::new());
                 }
-                Ok(NextEvent::NeedData)
+                Ok(Polled::NeedData)
             }
             Reader::Chunked(chunk) => self.read_chunked(chunk),
         }
@@ -202,7 +227,7 @@ impl Connection {
         self.request_kind == Some(kind)
     }
 
-    fn read_head(&mut self) -> Result<NextEvent, RemoteProtocolError> {
+    fn read_head(&mut self) -> Result<Polled, RemoteProtocolError> {
         let request = self.role == Role::Server;
         if !self.section_ready(true) {
             return self.wait_for_section(true);
@@ -246,7 +271,7 @@ impl Connection {
     fn wait_for_section(
         &mut self,
         skip_leading_empty: bool,
-    ) -> Result<NextEvent, RemoteProtocolError> {
+    ) -> Result<Polled, RemoteProtocolError> {
         let (limit_message, eof_message, status) = if skip_leading_empty {
             (
                 "HTTP head exceeds max_head_bytes",
@@ -269,7 +294,7 @@ impl Connection {
         self.need_data_or_eof(eof_message)
     }
 
-    fn accept_request(&mut self, request: Request) -> Result<NextEvent, RemoteProtocolError> {
+    fn accept_request(&mut self, request: Request) -> Result<Polled, RemoteProtocolError> {
         let Request {
             method,
             target,
@@ -297,7 +322,7 @@ impl Connection {
         self.upgrade_proposals = upgrades;
         self.peer_version = Some(version);
         self.reader = reader(framing);
-        Ok(NextEvent::Event(Event::Request(Request {
+        Ok(Polled::Event(Event::Request(Request {
             method,
             target,
             headers,
@@ -305,7 +330,7 @@ impl Connection {
         })))
     }
 
-    fn accept_response(&mut self, response: Response) -> Result<NextEvent, RemoteProtocolError> {
+    fn accept_response(&mut self, response: Response) -> Result<Polled, RemoteProtocolError> {
         let Response {
             status,
             reason,
@@ -329,7 +354,7 @@ impl Connection {
                 self.continue_before_upgrade = false;
             }
             self.peer_version = Some(version);
-            return Ok(NextEvent::Event(Event::InformationalResponse(
+            return Ok(Polled::Event(Event::InformationalResponse(
                 InformationalResponse {
                     status,
                     reason,
@@ -362,7 +387,7 @@ impl Connection {
             self.state.disable_keep_alive();
         }
         self.reader = reader(framing);
-        Ok(NextEvent::Event(Event::Response(Response {
+        Ok(Polled::Event(Event::Response(Response {
             status,
             reason,
             headers,
@@ -370,7 +395,7 @@ impl Connection {
         })))
     }
 
-    fn read_chunked(&mut self, chunk: Chunk) -> Result<NextEvent, RemoteProtocolError> {
+    fn read_chunked(&mut self, chunk: Chunk) -> Result<Polled, RemoteProtocolError> {
         match chunk {
             Chunk::Size { scanned } => {
                 let Some(end) = find_crlf(self.input.as_slice(), scanned) else {
@@ -420,8 +445,7 @@ impl Connection {
                         first: false,
                     })
                 };
-                let data = self.input.take(count);
-                self.peer_data(data, first, last)
+                self.peer_data(count, first, last)
             }
             Chunk::DataEnd => {
                 if self.input.as_slice().len() < 2 {
@@ -456,37 +480,37 @@ impl Connection {
 
     fn peer_data(
         &mut self,
-        data: Vec<u8>,
+        count: usize,
         chunk_start: bool,
         chunk_end: bool,
-    ) -> Result<NextEvent, RemoteProtocolError> {
+    ) -> Result<Polled, RemoteProtocolError> {
         self.advance_peer(StateEvent::Data)?;
         self.waiting_for_continue = false;
-        Ok(NextEvent::Event(Event::Data(Data {
-            data,
+        Ok(Polled::Data {
+            count,
             chunk_start,
             chunk_end,
-        })))
+        })
     }
 
-    fn finish_peer(&mut self, trailers: Vec<Header>) -> Result<NextEvent, RemoteProtocolError> {
+    fn finish_peer(&mut self, trailers: Vec<Header>) -> Result<Polled, RemoteProtocolError> {
         self.advance_peer(StateEvent::EndOfMessage)?;
         self.reader = Reader::Head;
-        Ok(NextEvent::Event(Event::EndOfMessage(EndOfMessage {
+        Ok(Polled::Event(Event::EndOfMessage(EndOfMessage {
             trailers,
         })))
     }
 
-    fn peer_closed(&mut self) -> Result<NextEvent, RemoteProtocolError> {
+    fn peer_closed(&mut self) -> Result<Polled, RemoteProtocolError> {
         self.advance_peer(StateEvent::ConnectionClosed)?;
-        Ok(NextEvent::Event(Event::ConnectionClosed))
+        Ok(Polled::Event(Event::ConnectionClosed))
     }
 
-    fn need_data_or_eof(&mut self, message: &str) -> Result<NextEvent, RemoteProtocolError> {
+    fn need_data_or_eof(&mut self, message: &str) -> Result<Polled, RemoteProtocolError> {
         if self.eof {
             Err(remote(message, Some(400)))
         } else {
-            Ok(NextEvent::NeedData)
+            Ok(Polled::NeedData)
         }
     }
 

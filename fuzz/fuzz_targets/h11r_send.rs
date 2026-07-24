@@ -22,14 +22,19 @@ fn framing(chunked: bool, body_len: usize) -> (Vec<u8>, Vec<u8>) {
     }
 }
 
-fn decode(mut connection: Connection, wire: &[u8], body: &[u8]) {
+fn decode(mut connection: Connection, wire: &[u8], expected_body: &[u8]) {
     connection.receive_data(wire).unwrap();
     let mut events = Vec::new();
+    let mut body = Vec::new();
     for _ in 0..MAX_EVENTS {
         match connection.next_event().unwrap() {
+            NextEvent::Event(Event::Data(data)) => {
+                assert!(!events.is_empty(), "data before the message head");
+                body.extend_from_slice(data.data);
+            }
             NextEvent::Event(event) => {
                 let complete = matches!(event, Event::EndOfMessage(_));
-                events.push(event);
+                events.push(common::detach(event));
                 if complete {
                     break;
                 }
@@ -37,7 +42,7 @@ fn decode(mut connection: Connection, wire: &[u8], body: &[u8]) {
             NextEvent::NeedData | NextEvent::Paused => break,
         }
     }
-    assert_message(&events, body);
+    assert_message(&events, &body, expected_body);
 }
 
 fn request_round_trip(control: u8, value: &[u8], body: &[u8]) {

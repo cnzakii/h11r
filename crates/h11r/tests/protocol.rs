@@ -8,18 +8,52 @@ fn header(name: &[u8], value: &[u8]) -> Header {
     (name.to_vec(), value.to_vec())
 }
 
-fn data(value: &[u8], chunk_start: bool, chunk_end: bool) -> Data {
+fn data(value: &[u8], chunk_start: bool, chunk_end: bool) -> Data<'_> {
     Data {
-        data: value.to_vec(),
+        data: value,
         chunk_start,
         chunk_end,
     }
 }
 
-fn event(connection: &mut Connection) -> Event {
+fn event(connection: &mut Connection) -> Event<'_> {
     match connection.next_event().expect("valid peer input") {
         NextEvent::Event(event) => event,
         other => panic!("expected event, got {other:?}"),
+    }
+}
+
+/// An owned copy of a drained event, for tests that accumulate events while
+/// continuing to feed the connection.
+#[derive(Debug, Eq, PartialEq)]
+enum Received {
+    Request,
+    Data {
+        data: Vec<u8>,
+        chunk_start: bool,
+        chunk_end: bool,
+    },
+    EndOfMessage {
+        trailers: Vec<Header>,
+    },
+}
+
+fn drain(connection: &mut Connection, events: &mut Vec<Received>) {
+    loop {
+        match connection.next_event().expect("valid peer input") {
+            NextEvent::Event(Event::Request(_)) => events.push(Received::Request),
+            NextEvent::Event(Event::Data(data)) => events.push(Received::Data {
+                data: data.data.to_vec(),
+                chunk_start: data.chunk_start,
+                chunk_end: data.chunk_end,
+            }),
+            NextEvent::Event(Event::EndOfMessage(end)) => events.push(Received::EndOfMessage {
+                trailers: end.trailers,
+            }),
+            NextEvent::Event(event) => panic!("unexpected event {event:?}"),
+            NextEvent::NeedData => break,
+            NextEvent::Paused => panic!("request parsing cannot pause"),
+        }
     }
 }
 
@@ -175,16 +209,14 @@ fn head_limit_also_bounds_incomplete_chunk_size_lines() {
     let mut events = Vec::new();
     for byte in body {
         chunked.receive_data(&[byte]).unwrap();
-        loop {
-            match chunked.next_event().unwrap() {
-                NextEvent::Event(event) => events.push(event),
-                NextEvent::NeedData => break,
-                NextEvent::Paused => panic!("chunked request cannot pause"),
-            }
-        }
+        drain(&mut chunked, &mut events);
     }
-    assert!(events.iter().any(|event| matches!(event, Event::Data(_))));
-    assert!(matches!(events.last(), Some(Event::EndOfMessage(_))));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Received::Data { .. }))
+    );
+    assert!(matches!(events.last(), Some(Received::EndOfMessage { .. })));
 
     let mut oversized_chunk = Connection::new(Role::Server, limits);
     oversized_chunk
@@ -1520,32 +1552,38 @@ fn chunked_message_is_invariant_under_transport_segmentation() {
         let mut events = Vec::new();
         for part in wire.chunks(size) {
             server.receive_data(part).unwrap();
-            loop {
-                match server.next_event().unwrap() {
-                    NextEvent::Event(event) => events.push(event),
-                    NextEvent::NeedData => break,
-                    NextEvent::Paused => panic!("server cannot pause before its response"),
-                }
-            }
+            drain(&mut server, &mut events);
         }
-        assert!(matches!(events.first(), Some(Event::Request(_))));
+        assert!(matches!(events.first(), Some(Received::Request)));
         assert_eq!(
             events.last(),
-            Some(&Event::EndOfMessage(EndOfMessage {
+            Some(&Received::EndOfMessage {
                 trailers: vec![header(b"Digest", b"ok")],
-            }))
+            })
         );
         let chunks = &events[1..events.len() - 1];
         let body: Vec<_> = chunks
             .iter()
             .flat_map(|event| match event {
-                Event::Data(data) => data.data.iter().copied(),
+                Received::Data { data, .. } => data.iter().copied(),
                 _ => panic!("body contained a non-data event"),
             })
             .collect();
         assert_eq!(body, b"abc");
-        assert!(matches!(chunks.first(), Some(Event::Data(data)) if data.chunk_start));
-        assert!(matches!(chunks.last(), Some(Event::Data(data)) if data.chunk_end));
+        assert!(matches!(
+            chunks.first(),
+            Some(Received::Data {
+                chunk_start: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            chunks.last(),
+            Some(Received::Data {
+                chunk_end: true,
+                ..
+            })
+        ));
     }
 }
 
