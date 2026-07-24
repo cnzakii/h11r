@@ -1053,6 +1053,10 @@
 <li>A searchable Zensical documentation site with a guided learning path,
   task-oriented integration and advanced guides, generated Python API
   reference, and GitHub Pages deployment.</li>
+<li>Allow Python transport adapters to pass byte-sized body proxies through
+  <code>Connection.send_data_parts(body)</code>. A proxy declares its exact byte length
+  with <code>nbytes</code>, and h11r returns the identical object for the transport to
+  write.</li>
 </ul>
 <h2 id="011-2026-07-21">[0.1.1] - 2026-07-21<a class="headerlink" href="#011-2026-07-21" title="Permanent link">&para;</a></h2>
 <h3 id="added_1">Added<a class="headerlink" href="#added_1" title="Permanent link">&para;</a></h3>

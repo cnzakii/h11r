@@ -2476,8 +2476,11 @@ transport.</p>
     <div class="doc doc-contents ">
 
         <p>Return <code>(prefix, original_object, suffix)</code> without copying body bytes.</p>
-<p>Write the returned values in order without changing the body until all
-three writes complete.</p>
+<p>Contiguous buffers use their byte length. Other objects must expose
+<code>nbytes</code> as the exact number of body bytes represented by the object.</p>
+<p>Write the prefix, exactly the determined number of body bytes, and the
+suffix in order. After a partial body write, resume until the body and
+suffix are complete or discard the connection.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -2496,11 +2499,12 @@ three writes complete.</p>
                 <code>data</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytes">bytes</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytearray">bytearray</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#memoryview">memoryview</a></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#object">object</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Contiguous body buffer.</p>
+                <p>A contiguous buffer or an object with an integer
+<code>nbytes</code> property.</p>
               </div>
             </td>
             <td>
@@ -2522,12 +2526,12 @@ three writes complete.</p>
       <tbody>
           <tr class="doc-section-item">
 <td><code>parts</code></td>            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#tuple">tuple</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytes">bytes</a>, <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytes">bytes</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytearray">bytearray</a> | <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#memoryview">memoryview</a>, <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytes">bytes</a>]</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#tuple">tuple</a>[<a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytes">bytes</a>, <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#object">object</a>, <a class="autorefs autorefs-external" href="https://docs.python.org/3/library/stdtypes.html#bytes">bytes</a>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Framing
-prefix, the identical input object, and framing suffix.</p>
+                <p>Framing prefix, the identical
+input object, and framing suffix.</p>
               </div>
             </td>
           </tr>
@@ -2550,7 +2554,8 @@ prefix, the identical input object, and framing suffix.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>data</code> does not implement the buffer protocol.</p>
+                <p>If <code>data</code> is neither a buffer nor byte-sized, or if
+<code>nbytes</code> is not an integer.</p>
               </div>
             </td>
           </tr>
@@ -2561,6 +2566,17 @@ prefix, the identical input object, and framing suffix.</p>
             <td>
               <div class="doc-md-description">
                 <p>If the buffer is not contiguous.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/exceptions.html#OverflowError">OverflowError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>nbytes</code> is negative or does not fit in the
+platform's address size.</p>
               </div>
             </td>
           </tr>

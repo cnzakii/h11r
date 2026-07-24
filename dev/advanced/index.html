@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Use h11r for streaming bodies, buffer-preserving writes, pipelining, and protocol handoff.">
+        <meta name="description" content="Use h11r for streaming bodies, passthrough writes, pipelining, and protocol handoff.">
       
       
         <meta name="author" content="h11r contributors">
@@ -570,10 +570,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#preserve-an-existing-body-buffer" class="md-nav__link">
+  <a href="#pass-through-a-transport-owned-body" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Preserve an existing body buffer
+        Pass through a transport-owned body
       </span>
     </span>
   </a>
@@ -862,10 +862,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#preserve-an-existing-body-buffer" class="md-nav__link">
+  <a href="#pass-through-a-transport-owned-body" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Preserve an existing body buffer
+        Pass through a transport-owned body
       </span>
     </span>
   </a>
@@ -983,7 +983,7 @@ has the matching need.</p>
 <td><code>Data</code> events and incremental <code>send_data()</code> calls</td>
 </tr>
 <tr>
-<td>Avoid copying a large existing body buffer inside <code>h11r</code></td>
+<td>Pass a transport-owned body object through <code>h11r</code></td>
 <td><code>send_data_parts()</code></td>
 </tr>
 <tr>
@@ -1013,33 +1013,36 @@ be validated after the final body chunk without buffering the entire body.</p>
 <div class="language-console highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">uv run python examples/python/streaming_body.py</span>
 </span></code></pre></div>
 <p>Success ends with <code>streamed 36 bytes without collecting the body</code>.</p>
-<p><a href="https://github.com/cnzakii/h11r/blob/6a5053d2f03b73f57889e6023327918b5768136e/examples/python/streaming_body.py">Read <code>streaming_body.py</code> ↗</a></p>
-<h2 id="preserve-an-existing-body-buffer">Preserve an existing body buffer<a class="headerlink" href="#preserve-an-existing-body-buffer" title="Permanent link">&para;</a></h2>
+<p><a href="https://github.com/cnzakii/h11r/blob/ea09967982f99fa1370c485a2f9184f328a2d6be/examples/python/streaming_body.py">Read <code>streaming_body.py</code> ↗</a></p>
+<h2 id="pass-through-a-transport-owned-body">Pass through a transport-owned body<a class="headerlink" href="#pass-through-a-transport-owned-body" title="Permanent link">&para;</a></h2>
 <p><code>send_data()</code> returns one convenient <code>bytes</code> object containing the body and any
-required framing. For a large, contiguous body that already exists in memory,
-<code>send_data_parts()</code> can keep that body object separate:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">prefix</span><span class="p">,</span> <span class="n">original_body</span><span class="p">,</span> <span class="n">suffix</span> <span class="o">=</span> <span class="n">connection</span><span class="o">.</span><span class="n">send_data_parts</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">write_all</span><span class="p">(</span><span class="n">prefix</span><span class="p">)</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">write_all</span><span class="p">(</span><span class="n">original_body</span><span class="p">)</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">write_all</span><span class="p">(</span><span class="n">suffix</span><span class="p">)</span>
+required framing. <code>send_data_parts()</code> instead determines framing from the
+body's byte length and returns the original object separately:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">region</span> <span class="o">=</span> <span class="n">FileRegion</span><span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">offset</span><span class="o">=</span><span class="n">offset</span><span class="p">,</span> <span class="n">nbytes</span><span class="o">=</span><span class="n">length</span><span class="p">)</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">prefix</span><span class="p">,</span> <span class="n">original_region</span><span class="p">,</span> <span class="n">suffix</span> <span class="o">=</span> <span class="n">connection</span><span class="o">.</span><span class="n">send_data_parts</span><span class="p">(</span><span class="n">region</span><span class="p">)</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">write_all</span><span class="p">(</span><span class="n">prefix</span><span class="p">)</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">send_file_region</span><span class="p">(</span><span class="n">original_region</span><span class="p">)</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">write_all</span><span class="p">(</span><span class="n">suffix</span><span class="p">)</span>
 </span></code></pre></div>
-<p>This avoids one body copy inside <code>h11r</code>, which can materially reduce the
-protocol-layer serialization cost for a large body. Keep <code>send_data()</code> as the
-simpler default for small bodies and measure the complete write path on the
-transport you actually use.</p>
-<p><a href="https://github.com/cnzakii/h11r/blob/6a5053d2f03b73f57889e6023327918b5768136e/crates/h11r/benches/h11r.rs">Inspect the 64 KiB body benchmark ↗</a></p>
-<p>This is buffer preservation at the <code>h11r</code> boundary, not an end-to-end zero-copy
-guarantee. Keep <code>original_body</code> alive and unchanged until all writes complete,
-and preserve the returned order. Use this path only when the transport can
-write or batch separate buffers without first combining them.
-Here, <code>write_all()</code> is the complete-write operation supplied by your
+<p>Contiguous buffers use their full <code>nbytes</code>; other objects expose an integer
+<code>nbytes</code> property declaring the exact number of bytes they represent. This
+lets a transport-owned file-region proxy pass through unchanged for
+<code>socket.sendfile()</code> without giving <code>h11r</code> ownership of the file or its
+transmission. Keep <code>send_data()</code> as the simpler default for small bodies.</p>
+<p><a href="https://github.com/cnzakii/h11r/blob/ea09967982f99fa1370c485a2f9184f328a2d6be/crates/h11r/benches/h11r.rs">Inspect the 64 KiB body benchmark ↗</a></p>
+<p>Write the prefix, exactly the declared number of body bytes, and the suffix in
+order. Resume any partial body write before sending the suffix; if that is
+impossible, discard the connection because <code>h11r</code> has already accounted for
+the declared bytes. Actual kernel zero-copy depends on the transport and
+operating system. Here, <code>write_all()</code> and <code>send_file_region()</code> are
+complete-write operations supplied by the
 <a href="../integration/#write-to-the-transport">transport adapter</a>.</p>
 <p>Run:</p>
 <div class="language-console highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="go">uv run python examples/python/zero_copy_body.py</span>
 </span></code></pre></div>
 <p>Success ends with <code>upload exchange is complete and the connection is reusable</code>.</p>
-<p><a href="https://github.com/cnzakii/h11r/blob/6a5053d2f03b73f57889e6023327918b5768136e/examples/python/zero_copy_body.py">Read <code>zero_copy_body.py</code> ↗</a></p>
+<p><a href="https://github.com/cnzakii/h11r/blob/ea09967982f99fa1370c485a2f9184f328a2d6be/examples/python/zero_copy_body.py">Read <code>zero_copy_body.py</code> ↗</a></p>
 <h2 id="handle-pipelined-requests">Handle pipelined requests<a class="headerlink" href="#handle-pipelined-requests" title="Permanent link">&para;</a></h2>
 <p>A peer can send another request before receiving the current response. <code>h11r</code>
 keeps the later request buffered and returns <code>PAUSED</code> until the current
@@ -1049,7 +1052,7 @@ becomes visible without allowing responses to be reordered.</p>
 <div class="language-console highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="go">uv run python examples/python/pipelining.py</span>
 </span></code></pre></div>
 <p>Success ends with <code>both pipelined responses were sent in request order</code>.</p>
-<p><a href="https://github.com/cnzakii/h11r/blob/6a5053d2f03b73f57889e6023327918b5768136e/examples/python/pipelining.py">Read <code>pipelining.py</code> ↗</a></p>
+<p><a href="https://github.com/cnzakii/h11r/blob/ea09967982f99fa1370c485a2f9184f328a2d6be/examples/python/pipelining.py">Read <code>pipelining.py</code> ↗</a></p>
 <h2 id="protocol-handoff">Protocol handoff<a class="headerlink" href="#protocol-handoff" title="Permanent link">&para;</a></h2>
 <p>After a successful Upgrade or CONNECT switch, HTTP processing stops at an
 exact byte boundary. Read <code>trailing_data</code> and pass any retained bytes to the
@@ -1064,7 +1067,7 @@ and connection lifecycle.</p>
 <div class="language-console highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="go">uv run python examples/python/websocket_upgrade.py</span>
 </span></code></pre></div>
 <p>Success ends with <code>client received WebSocket text: 'welcome'</code>.</p>
-<p><a href="https://github.com/cnzakii/h11r/blob/6a5053d2f03b73f57889e6023327918b5768136e/examples/python/websocket_upgrade.py">Read <code>websocket_upgrade.py</code> ↗</a></p>
+<p><a href="https://github.com/cnzakii/h11r/blob/ea09967982f99fa1370c485a2f9184f328a2d6be/examples/python/websocket_upgrade.py">Read <code>websocket_upgrade.py</code> ↗</a></p>
 <p>For exact method signatures and failure conditions, use the
 <a href="../api/">Python API reference</a>.</p>
 
