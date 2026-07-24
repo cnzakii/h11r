@@ -54,10 +54,10 @@ impl Buffer {
     pub(crate) fn consume(&mut self, count: usize) {
         self.start += count;
     }
-    pub(crate) fn take(&mut self, count: usize) -> Vec<u8> {
-        let value = self.as_slice()[..count].to_vec();
+    pub(crate) fn take(&mut self, count: usize) -> &[u8] {
+        let start = self.start;
         self.consume(count);
-        value
+        &self.bytes[start..start + count]
     }
 }
 

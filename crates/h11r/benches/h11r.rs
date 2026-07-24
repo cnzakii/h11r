@@ -62,43 +62,38 @@ fn head_with_fields(count: usize) -> Vec<u8> {
     wire
 }
 
-fn receive_head(wire: &[u8]) -> [NextEvent; 2] {
+fn receive_head(wire: &[u8]) -> Connection {
     let mut connection = Connection::new(Role::Server, Limits::default());
     connection.receive_data(black_box(wire)).unwrap();
-    [
-        connection.next_event().unwrap(),
-        connection.next_event().unwrap(),
-    ]
+    black_box(connection.next_event().unwrap());
+    black_box(connection.next_event().unwrap());
+    connection
 }
 
-fn receive_body(wire: &[u8]) -> [NextEvent; 3] {
+fn receive_body(wire: &[u8]) -> Connection {
     let mut connection = Connection::new(Role::Server, Limits::default());
     connection.receive_data(black_box(wire)).unwrap();
-    [
-        connection.next_event().unwrap(),
-        connection.next_event().unwrap(),
-        connection.next_event().unwrap(),
-    ]
+    black_box(connection.next_event().unwrap());
+    black_box(connection.next_event().unwrap());
+    black_box(connection.next_event().unwrap());
+    connection
 }
 
-fn receive_fragmented(wire: &[u8], size: usize) -> [NextEvent; 2] {
+fn receive_fragmented(wire: &[u8], size: usize) -> Connection {
     let mut connection = Connection::new(Role::Server, Limits::default());
-    let mut events = [None, None];
-    let mut count = 0;
     for part in wire.chunks(size) {
         connection.receive_data(black_box(part)).unwrap();
         loop {
             match connection.next_event().unwrap() {
                 NextEvent::NeedData => break,
                 NextEvent::Event(event) => {
-                    events[count] = Some(NextEvent::Event(event));
-                    count += 1;
+                    black_box(&event);
                 }
                 NextEvent::Paused => panic!("request parsing paused before a response"),
             }
         }
     }
-    events.map(|event| event.expect("request and end-of-message events"))
+    connection
 }
 
 fn reusable_cycle(connection: &mut Connection, reply: &Response) {
@@ -139,25 +134,51 @@ fn server_exchange(reply: &Response) -> [Vec<u8>; 3] {
 }
 
 fn check_workloads() {
-    let [request, end] = receive_head(REQUEST);
-    let NextEvent::Event(Event::Request(request)) = request else {
+    let mut connection = Connection::new(Role::Server, Limits::default());
+    connection.receive_data(REQUEST).unwrap();
+    let NextEvent::Event(Event::Request(request)) = connection.next_event().unwrap() else {
         panic!("expected request event")
     };
     assert_eq!(request.method.as_bytes(), b"GET");
     assert_eq!(request.target, b"/items?q=1");
-    assert!(matches!(end, NextEvent::Event(Event::EndOfMessage(_))));
+    assert!(matches!(
+        connection.next_event().unwrap(),
+        NextEvent::Event(Event::EndOfMessage(_))
+    ));
 
     for wire in [&fixed_wire(), &chunked_wire()] {
-        let [request, data, end] = receive_body(wire);
-        assert!(matches!(request, NextEvent::Event(Event::Request(_))));
-        assert!(matches!(data, NextEvent::Event(Event::Data(ref value)) if value.data == BODY));
-        assert!(matches!(end, NextEvent::Event(Event::EndOfMessage(_))));
+        let mut connection = Connection::new(Role::Server, Limits::default());
+        connection.receive_data(wire).unwrap();
+        assert!(matches!(
+            connection.next_event().unwrap(),
+            NextEvent::Event(Event::Request(_))
+        ));
+        let NextEvent::Event(Event::Data(data)) = connection.next_event().unwrap() else {
+            panic!("expected data event")
+        };
+        assert_eq!(data.data, BODY);
+        assert!(matches!(
+            connection.next_event().unwrap(),
+            NextEvent::Event(Event::EndOfMessage(_))
+        ));
     }
 
     for size in [1, 32] {
-        let [request, end] = receive_fragmented(REQUEST, size);
-        assert!(matches!(request, NextEvent::Event(Event::Request(_))));
-        assert!(matches!(end, NextEvent::Event(Event::EndOfMessage(_))));
+        let mut connection = Connection::new(Role::Server, Limits::default());
+        let (mut requests, mut ends) = (0, 0);
+        for part in REQUEST.chunks(size) {
+            connection.receive_data(part).unwrap();
+            loop {
+                match connection.next_event().unwrap() {
+                    NextEvent::NeedData => break,
+                    NextEvent::Event(Event::Request(_)) => requests += 1,
+                    NextEvent::Event(Event::EndOfMessage(_)) => ends += 1,
+                    NextEvent::Event(event) => panic!("unexpected event {event:?}"),
+                    NextEvent::Paused => panic!("request parsing paused before a response"),
+                }
+            }
+        }
+        assert_eq!((requests, ends), (1, 1));
     }
 
     let no_content = response(204, vec![]);

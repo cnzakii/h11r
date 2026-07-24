@@ -734,7 +734,7 @@ impl PyConnection {
     }
 }
 
-fn event_to_py(py: Python<'_>, event: core::Event) -> PyResult<Py<PyAny>> {
+fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py<PyAny>> {
     Ok(match event {
         core::Event::Request(value) => Py::new(py, PyRequest::from_core(py, value)?)?.into_any(),
         core::Event::InformationalResponse(value) => Py::new(
@@ -748,7 +748,7 @@ fn event_to_py(py: Python<'_>, event: core::Event) -> PyResult<Py<PyAny>> {
         core::Event::Data(value) => Py::new(
             py,
             PyData {
-                data: PyBytes::new(py, &value.data).unbind(),
+                data: PyBytes::new(py, value.data).unbind(),
                 chunk_start: value.chunk_start,
                 chunk_end: value.chunk_end,
             },
