@@ -79,10 +79,10 @@ pub struct Response {
 pub type InformationalResponse = Response;
 
 /// A piece of message body.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Data {
-    /// Decoded body bytes.
-    pub data: Vec<u8>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Data<'a> {
+    /// Decoded body bytes, borrowed from the connection's input buffer.
+    pub data: &'a [u8],
     /// Whether these bytes begin an HTTP chunk.
     pub chunk_start: bool,
     /// Whether these bytes end an HTTP chunk.
@@ -111,8 +111,11 @@ pub struct EndOfMessage {
 }
 
 /// A semantic event decoded from peer bytes.
+///
+/// [`Event::Data`] borrows the connection's input buffer, so an event must be
+/// dropped before the connection is used again.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Event {
+pub enum Event<'a> {
     /// A request head.
     Request(Request),
     /// A non-final response head.
@@ -120,7 +123,7 @@ pub enum Event {
     /// A final response head.
     Response(Response),
     /// Decoded body data.
-    Data(Data),
+    Data(Data<'a>),
     /// Message completion and optional trailers.
     EndOfMessage(EndOfMessage),
     /// Clean transport EOF.
@@ -129,9 +132,9 @@ pub enum Event {
 
 /// Result of polling [`Connection::next_event`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum NextEvent {
+pub enum NextEvent<'a> {
     /// One decoded protocol event.
-    Event(Event),
+    Event(Event<'a>),
     /// More peer bytes are needed.
     NeedData,
     /// HTTP parsing is paused until the caller advances the cycle or protocol.
