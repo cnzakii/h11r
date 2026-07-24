@@ -58,7 +58,7 @@ This lets h11r distinguish a clean close from a truncated HTTP message.
 | [`round_trip.py`](python/round_trip.py) | Request, `Data`, `EndOfMessage`, response, and keep-alive reuse over a synchronous byte stream |
 | [`streaming_body.py`](python/streaming_body.py) | Incremental body consumption, chunked framing, and trailers without collecting the full body |
 | [`pipelining.py`](python/pipelining.py) | Why buffered pipelined requests pause until the preceding response finishes |
-| [`zero_copy_body.py`](python/zero_copy_body.py) | `send_data_parts()` and preserving the caller's original body buffer |
+| [`zero_copy_body.py`](python/zero_copy_body.py) | `send_data_parts()` on the way out, `socket.recv_into()` with a reused buffer on the way in |
 | [`websocket_upgrade.py`](python/websocket_upgrade.py) | WebSocket handshake validation, HTTP 101, `trailing_data`, and wsproto ownership after handoff |
 | [`asyncio_server.py`](python/asyncio_server.py) | A real asynchronous server loop with back-pressure, timeouts, limits, errors, keep-alive, and shutdown |
 

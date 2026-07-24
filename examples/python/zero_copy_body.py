@@ -1,9 +1,13 @@
-"""Write an HTTP body without asking h11r to copy the body buffer.
+"""Move HTTP bodies without asking h11r or Python to copy the body buffer.
 
-``send_data()`` returns one convenient ``bytes`` object containing framing and
-body data. For a large body, ``send_data_parts()`` instead returns the framing
-around the original Python buffer so the transport can write the three pieces
-in order.
+Sending: ``send_data()`` returns one convenient ``bytes`` object containing
+framing and body data. For a large body, ``send_data_parts()`` instead returns
+the framing around the original Python buffer so the transport can write the
+three pieces in order.
+
+Receiving: ``socket.recv()`` allocates a fresh ``bytes`` object per read.
+``socket.recv_into()`` fills one reused buffer instead, and ``receive_data()``
+accepts a ``memoryview`` of the filled part directly.
 
 "Zero-copy" here describes the h11r boundary. Python's socket and the operating
 system may still copy data while moving it to the network.
@@ -16,22 +20,29 @@ import socket
 import h11r
 
 
-def next_event(connection: h11r.Connection, transport: socket.socket) -> object:
+def next_event(
+    connection: h11r.Connection, transport: socket.socket, buffer: memoryview
+) -> object:
     while True:
         event = connection.next_event()
         if event is h11r.ReceiveStatus.NEED_DATA:
-            connection.receive_data(transport.recv(64 * 1024))
+            # An empty slice after recv_into() returns 0 marks EOF, exactly
+            # like the empty bytes recv() returns on a closed transport.
+            received = transport.recv_into(buffer)
+            connection.receive_data(buffer[:received])
             continue
         return event
 
 
-def receive_body(connection: h11r.Connection, transport: socket.socket) -> bytes:
+def receive_body(
+    connection: h11r.Connection, transport: socket.socket, buffer: memoryview
+) -> bytes:
     """Consume one request and return all of its body fragments."""
     body = bytearray()
     request_received = False
 
     while True:
-        event = next_event(connection, transport)
+        event = next_event(connection, transport, buffer)
 
         if isinstance(event, h11r.Request):
             request_received = True
@@ -50,12 +61,14 @@ def receive_body(connection: h11r.Connection, transport: socket.socket) -> bytes
             raise RuntimeError(f"unexpected upload event: {event!r}")
 
 
-def receive_response(connection: h11r.Connection, transport: socket.socket) -> None:
+def receive_response(
+    connection: h11r.Connection, transport: socket.socket, buffer: memoryview
+) -> None:
     """Consume the final response so the HTTP exchange is actually complete."""
     response_received = False
 
     while True:
-        event = next_event(connection, transport)
+        event = next_event(connection, transport, buffer)
 
         if isinstance(event, h11r.InformationalResponse):
             print(f"client received informational response {event.status_code}")
@@ -82,6 +95,8 @@ def main() -> None:
     server_socket.settimeout(2)
     client = h11r.Connection(h11r.Role.CLIENT)
     server = h11r.Connection(h11r.Role.SERVER)
+    # One reused receive buffer replaces a fresh bytes allocation per read.
+    receive_buffer = memoryview(bytearray(64 * 1024))
 
     try:
         # Chunked encoding makes the framing bytes visible: h11r will produce a
@@ -104,7 +119,7 @@ def main() -> None:
         client_socket.sendall(suffix)
         client_socket.sendall(client.end_of_message())
 
-        received_body = receive_body(server, server_socket)
+        received_body = receive_body(server, server_socket, receive_buffer)
         print(f"server received {len(received_body)} body bytes")
         print(f"h11r added chunk framing {prefix!r} ... {suffix!r}")
 
@@ -112,7 +127,7 @@ def main() -> None:
         # upload would leave the client unaware of whether the server accepted it.
         server_socket.sendall(server.send_response(204, reason="No Content"))
         server_socket.sendall(server.end_of_message())
-        receive_response(client, client_socket)
+        receive_response(client, client_socket, receive_buffer)
 
         client.start_next_cycle()
         server.start_next_cycle()

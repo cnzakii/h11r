@@ -10,6 +10,28 @@ User-visible changes to h11r are recorded here.
   task-oriented integration and advanced guides, generated Python API
   reference, and GitHub Pages deployment.
 
+### Changed
+
+- Python 3.11 is the minimum supported version; wheels now target the
+  `abi3-py311` stable ABI.
+- `receive_data()` and `send_data()` read `bytearray` and `memoryview`
+  arguments through the buffer protocol without an intermediate copy, so
+  `socket.recv_into()` loops with a reused buffer avoid a `bytes`
+  allocation per read. Buffers must be C-contiguous with byte-sized items.
+  Free-threaded builds still copy mutable buffers, because without the GIL
+  another thread may change them mid-read; immutable `bytes` are never
+  copied.
+- Rust core: `Event::Data` borrows the connection's input buffer instead of
+  owning a copy, so an event must be dropped before the connection is used
+  again. The Python `Data` event still owns its `bytes`.
+
+### Performance
+
+- Body bytes now move from the transport to `Data.data` with two fewer
+  copies. Receive-path overhead drops roughly 40% for 64 KiB chunks fed
+  through a reused `recv_into()` buffer, and roughly 10% for 1 KiB bodies
+  parsed by the Rust core.
+
 ## [0.1.1] - 2026-07-21
 
 ### Added
