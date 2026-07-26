@@ -116,13 +116,45 @@ affected by a pull request.
 
 ## Performance Changes
 
-Build the Python extension in release mode before running the Python benchmark:
+Build the Python extension in release mode before running Python benchmarks:
 
 ```console
 uv --directory crates/h11r-python run --locked maturin develop --release
 uv run --locked --group benchmark python \
   crates/h11r-python/benchmarks/compare_h11.py
 ```
+
+The receive-buffer benchmark isolates one 64 KiB `receive_data()` call and its
+`Data` event at the Python/Rust boundary. Run it against a release build and
+save the full pyperf result:
+
+```console
+uv run --locked --group benchmark python \
+  crates/h11r-python/benchmarks/receive_buffer.py \
+  --output /tmp/h11r-receive.json
+```
+
+For a before-and-after comparison, use separate clean checkouts and build the
+release extension in each checkout with the same interpreter. Save one result
+from each checkout, then let pyperf report the means and percentage changes:
+
+```console
+# Run these commands in the main checkout.
+UV_PYTHON=3.12 uv sync --locked --group benchmark
+UV_PYTHON=3.12 uv --directory crates/h11r-python run --locked \
+  maturin develop --release
+UV_PYTHON=3.12 uv run --locked --group benchmark python \
+  crates/h11r-python/benchmarks/receive_buffer.py \
+  --output /tmp/h11r-receive-main.json
+
+# Run the same sync, build, and benchmark commands in the change checkout, using
+# /tmp/h11r-receive-change.json as the output, then compare the saved results.
+UV_PYTHON=3.12 uv run --locked --group benchmark python -m pyperf compare_to \
+  /tmp/h11r-receive-main.json /tmp/h11r-receive-change.json
+```
+
+Set `UV_PYTHON=3.14t` instead in every command to repeat the comparison on
+free-threaded CPython. Do not commit machine-specific pyperf result files.
 
 Report the workload, environment, versions, and before-and-after results. A
 faster result must preserve equivalent protocol behavior.
