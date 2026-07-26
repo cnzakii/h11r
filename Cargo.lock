@@ -177,7 +177,6 @@ version = "0.1.1"
 dependencies = [
  "h11r",
  "pyo3",
- "pyo3-build-config",
 ]
 
 [[package]]

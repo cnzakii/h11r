@@ -1542,6 +1542,39 @@ fn eof_is_idempotent_but_cannot_be_followed_by_bytes() {
 }
 
 #[test]
+fn byte_iterator_input_is_appended_directly() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data_iter(
+            b"GET /iter HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                .iter()
+                .copied(),
+        )
+        .unwrap();
+
+    let Event::Request(request) = event(&mut server) else {
+        panic!("expected request")
+    };
+    assert_eq!(request.target, b"/iter");
+}
+
+#[test]
+fn empty_byte_iterator_marks_eof() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server.receive_data_iter(std::iter::empty()).unwrap();
+
+    assert!(matches!(event(&mut server), Event::ConnectionClosed));
+}
+
+#[test]
+fn byte_iterator_input_after_eof_is_rejected() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server.receive_data_iter(std::iter::empty()).unwrap();
+
+    assert!(server.receive_data_iter(*b"G").is_err());
+}
+
+#[test]
 fn chunked_message_is_invariant_under_transport_segmentation() {
     // RFC 9112 Sections 2.1 and 7.1 define HTTP message and chunk boundaries;
     // transport read boundaries have no protocol meaning.
