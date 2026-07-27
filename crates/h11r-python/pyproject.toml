@@ -31,7 +31,7 @@ dependencies = []
 
 [project.urls]
 Changelog = "https://github.com/cnzakii/h11r/blob/main/CHANGELOG.md"
-Documentation = "https://cnzakii.github.io/h11r/"
+Documentation = "https://h11r.readthedocs.io/en/stable/"
 Source = "https://github.com/cnzakii/h11r"
 Issues = "https://github.com/cnzakii/h11r/issues"
 

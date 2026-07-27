@@ -177,32 +177,19 @@ git push origin vX.Y.Z
 
 The tag starts the release workflow. After approval of the `release`
 environment, GitHub Actions publishes the Python distributions to PyPI and the
-Rust crate to crates.io, creates the GitHub Release, and publishes the
-documentation.
+Rust crate to crates.io and creates the GitHub Release. Read the Docs
+independently builds the tagged documentation.
 
 Documentation has three kinds of address:
 
-- `/dev/` follows documentation-relevant changes on `main`;
-- `/X.Y/` is built from the corresponding release tag, and patch releases
-  update the same version line;
-- `latest` points to the greatest published `X.Y` line, and the site root
-  redirects there. When no release documentation exists, it falls back to
-  `/dev/`.
+- `/en/latest/` follows `main`;
+- `/en/stable/` follows the greatest active release;
+- `/en/vX.Y.Z/` is built from the corresponding release tag.
 
-Pull requests only build affected documentation. A release moves `latest` only
-when its stable version is the greatest stable tag, so a maintenance release
-for an older line cannot move the default documentation backwards.
-
-Configure the repository's GitHub Pages source as **GitHub Actions**.
-
-To republish the latest patch in a version line from a release tag that
-contains the site configuration, run the reusable documentation workflow
-manually:
-
-```console
-gh workflow run publish-docs.yml \
-  --ref vX.Y.Z
-```
+Import the project into Read the Docs, enable pull request builds, and activate
+semantic-version tags through its version automation rules. After the first
+release build, set `stable` as the project's default version. Rebuild a version
+from the Read the Docs dashboard when needed.
 
 ### Recovering a Partial Release
 

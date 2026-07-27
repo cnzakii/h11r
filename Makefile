@@ -28,13 +28,14 @@ docs-benchmark:
 		--svg docs/assets/python-benchmark.svg \
 		--table target/docs/python-benchmark.md
 
-# mkdocstrings inspects the compiled PyO3 module, so prepare it before any
-# Zensical or mike build.
+# The API reference merges docstrings from the compiled PyO3 module, so prepare
+# it before a Zensical build.
 docs-prepare: docs-benchmark
 	uv run --project "$(CURDIR)" --directory crates/h11r-python \
 		--group docs --locked maturin develop --release
 
 docs: docs-prepare
+	uv run --group docs --locked python docs/griffe_runtime_docstrings.py
 	uv run --group docs --locked zensical build --strict
 
 docs-serve: docs-prepare

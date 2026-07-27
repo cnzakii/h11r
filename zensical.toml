@@ -3,7 +3,7 @@
 site_name = "h11r"
 site_description = "A fast, typed Sans-I/O HTTP/1.1 library for Python."
 site_author = "h11r contributors"
-site_url = "https://cnzakii.github.io/h11r/"
+site_url = "https://h11r.readthedocs.io/"
 copyright = "Copyright &copy; 2026 h11r contributors"
 extra_css = ["stylesheets/extra.css"]
 
@@ -36,18 +36,10 @@ nav = [
     ] },
 ]
 
-# mike supplies release aliases and the version selector on deployed sites.
-[project.extra.version]
-provider = "mike"
-# The site root and version warnings follow the managed latest alias.
-default = "latest"
-alias = true
-
 [project.theme]
 language = "en"
 logo = "assets/h11r.svg"
 favicon = "assets/h11r.svg"
-custom_dir = "docs/overrides"
 features = [
     "content.code.copy",
     "navigation.footer",
@@ -118,11 +110,11 @@ paths = ["crates/h11r-python/python"]
 inventories = ["https://docs.python.org/3/objects.inv"]
 
 [project.plugins.mkdocstrings.handlers.python.options]
+allow_inspection = true
 docstring_style = "google"
+extensions = ["docs/griffe_runtime_docstrings.py:RuntimeDocstrings"]
 filters = ["!^_"]
 
-# h11r._core is a compiled PyO3 module, so its docstrings require inspection.
-force_inspection = true
 members_order = "source"
 separate_signature = true
 show_signature_annotations = true
@@ -133,6 +125,6 @@ show_labels = false
 show_source = false
 
 [project.plugins.mkdocstrings.handlers.python.options.docstring_options]
-# Exact annotations remain available in the package's published .pyi files.
+# Exact annotations come from the package's published .pyi files.
 warn_missing_types = false
 warn_unknown_params = false
