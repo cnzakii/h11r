@@ -163,7 +163,7 @@ jobs:
   documentation:
     name: Build documentation
     needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true'
+    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -173,16 +173,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: uv sync --locked
       - run: make docs
-
-  publish-documentation:
-    name: Publish development documentation
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.docs == 'true'
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/publish-docs.yml
 
   required:
     name: Required checks
@@ -195,7 +185,6 @@ jobs:
       - python
       - coverage
       - documentation
-      - publish-documentation
     runs-on: ubuntu-latest
     steps:
       - name: Require successful affected checks

@@ -6,8 +6,8 @@ classify() {
 
     while IFS= read -r path; do
         case "$path" in
+            .readthedocs.yaml | \
             .github/workflows/ci.yml | \
-            .github/workflows/publish-docs.yml | \
             Cargo.lock | Cargo.toml | CHANGELOG.md | CONTRIBUTING.md | \
             LICENSE | Makefile | README.md | SECURITY.md | \
             crates/h11r-python/Cargo.toml | \
@@ -15,7 +15,7 @@ classify() {
             crates/h11r-python/pyproject.toml | \
             crates/h11r-python/python/h11r/* | \
             crates/h11r-python/src/* | \
-            docs/assets/* | docs/overrides/* | docs/site/* | \
+            docs/assets/* | docs/griffe_runtime_docstrings.py | docs/site/* | \
             examples/* | pyproject.toml | uv.lock | \
             zensical.toml)
                 docs=true
@@ -23,8 +23,10 @@ classify() {
         esac
 
         case "$path" in
-            .agents/* | .github/ISSUE_TEMPLATE/* | docs/* | \
-            .github/workflows/publish-docs.yml | \
+            docs/griffe_runtime_docstrings.py)
+                code=true
+                ;;
+            .agents/* | .github/ISSUE_TEMPLATE/* | .readthedocs.yaml | docs/* | \
             zensical.toml | *.md | LICENSE*)
                 ;;
             *)
@@ -43,6 +45,10 @@ docs=true"
 docs=false"
     test "$(printf '%s\n' docs/knowledge/tooling/zensical.md | classify)" = "code=false
 docs=false"
+    test "$(printf '%s\n' .readthedocs.yaml | classify)" = "code=false
+docs=true"
+    test "$(printf '%s\n' docs/griffe_runtime_docstrings.py | classify)" = "code=true
+docs=true"
     test "$(printf '%s\n' crates/h11r/src/lib.rs | classify)" = "code=true
 docs=false"
     test "$(printf '%s\n' Cargo.toml | classify)" = "code=true
