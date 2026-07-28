@@ -3,7 +3,7 @@
 use h11r as core;
 use h11r::{Method, StatusCode};
 use pyo3::PyTypeInfo;
-use pyo3::buffer::{PyBuffer, ReadOnlyCell};
+use pyo3::buffer::{PyUntypedBuffer, ReadOnlyCell};
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyMemoryView, PyModule, PyString, PyTuple};
@@ -452,8 +452,6 @@ impl PyConnection {
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
-    ///     ValueError: If the buffer is not C-contiguous.
-    ///     BufferError: If the buffer items are not single bytes.
     ///     LocalProtocolError: If non-empty data follows EOF.
     fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
         with_buffer_bytes(data, |data| match data {
@@ -621,8 +619,6 @@ impl PyConnection {
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
-    ///     ValueError: If the buffer is not C-contiguous.
-    ///     BufferError: If the buffer items are not single bytes.
     ///     LocalProtocolError: If body data is forbidden or violates framing.
     fn send_data(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Py<PyBytes>> {
         let bytes = with_buffer_bytes(data, |data| match data {
@@ -838,8 +834,9 @@ enum BufferBytes<'a> {
 
 /// Runs `consume` over a safe view of a buffer-protocol object.
 ///
-/// Immutable `bytes` are borrowed directly. Other buffers expose cells whose
-/// values must be read individually because another thread may mutate them.
+/// Immutable `bytes` are borrowed directly. Contiguous, `u8`-compatible
+/// buffers expose cells whose values must be read individually because another
+/// thread may mutate them. Other buffers retain the previous copying behavior.
 fn with_buffer_bytes<R>(
     value: &Bound<'_, PyAny>,
     consume: impl FnOnce(BufferBytes<'_>) -> R,
@@ -847,11 +844,16 @@ fn with_buffer_bytes<R>(
     if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())));
     }
-    let buffer = PyBuffer::<u8>::get(value)?;
-    let Some(cells) = buffer.as_slice(value.py()) else {
-        return Err(PyValueError::new_err("expected a C-contiguous buffer"));
-    };
-    Ok(consume(BufferBytes::Cells(cells)))
+    let buffer = PyUntypedBuffer::get(value)?;
+    if let Ok(buffer) = buffer.as_typed::<u8>()
+        && let Some(cells) = buffer.as_slice(value.py())
+    {
+        return Ok(consume(BufferBytes::Cells(cells)));
+    }
+    drop(buffer);
+    let view = PyMemoryView::from(value)?;
+    let bytes = view.call_method0("tobytes")?.cast_into::<PyBytes>()?;
+    Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())))
 }
 
 fn contiguous_buffer_len(value: &Bound<'_, PyAny>) -> PyResult<usize> {
