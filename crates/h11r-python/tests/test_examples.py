@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import runpy
+import socket
 from pathlib import Path
+from threading import Thread
 
 import h11r
 import pytest
@@ -79,6 +81,23 @@ async def receive_final_response(
             raise ConnectionError("server closed before finishing the response")
         elif event is h11r.ReceiveStatus.PAUSED:
             raise RuntimeError("client paused before the response completed")
+
+
+def receive_socket_response(transport: socket.socket) -> bytes:
+    response = bytearray()
+    while True:
+        chunk = transport.recv(64 * 1024)
+        if not chunk:
+            return bytes(response)
+        response.extend(chunk)
+
+
+def assert_http_response(response: bytes, status: int, body: bytes) -> None:
+    head, separator, actual_body = response.partition(b"\r\n\r\n")
+    assert separator == b"\r\n\r\n"
+    assert head.startswith(f"HTTP/1.1 {status} ".encode())
+    assert b"Connection: close\r\n" in head + b"\r\n"
+    assert actual_body == body
 
 
 def test_asyncio_server_runs_complete_connection_flow() -> None:
@@ -161,6 +180,152 @@ def test_asyncio_server_runs_complete_connection_flow() -> None:
             assert error_response.endswith(b"invalid HTTP request\n")
             bad_writer.close()
             await bad_writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(asyncio.wait_for(exercise_server(), timeout=2))
+
+
+def test_receive_buffer_server_runs_one_request_over_loopback() -> None:
+    example = (
+        Path(__file__).parents[3] / "examples" / "python" / "receive_buffer_server.py"
+    )
+    namespace = runpy.run_path(str(example))
+    serve_once = namespace["serve_once"]
+    max_request_body = namespace["MAX_REQUEST_BODY"]
+
+    def exchange(request: bytes) -> bytes:
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            listener.settimeout(2)
+            thread = Thread(target=serve_once, args=(listener,))
+            thread.start()
+            try:
+                with socket.create_connection(
+                    listener.getsockname(), timeout=2
+                ) as client:
+                    client.sendall(request)
+                    return receive_socket_response(client)
+            finally:
+                thread.join(timeout=2)
+                assert not thread.is_alive()
+
+    success = exchange(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
+    assert_http_response(success, 200, b"hello from h11r\n")
+
+    malformed = exchange(b"NOT HTTP\r\n\r\n")
+    assert_http_response(malformed, 400, b"bad request\n")
+
+    oversized = exchange(
+        b"POST / HTTP/1.1\r\n"
+        b"Host: example.test\r\n"
+        b"Content-Length: "
+        + str(max_request_body + 1).encode()
+        + b"\r\n\r\n"
+        + b"x" * (max_request_body + 1)
+    )
+    assert_http_response(oversized, 413, b"request body too large\n")
+
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        listener.settimeout(2)
+        thread = Thread(target=serve_once, args=(listener,))
+        thread.start()
+        try:
+            with socket.create_connection(listener.getsockname(), timeout=2) as client:
+                client.sendall(
+                    b"POST /missing HTTP/1.1\r\n"
+                    b"Host: example.test\r\n"
+                    b"Content-Length: 4\r\n"
+                    b"Expect: 100-continue\r\n\r\n"
+                )
+                informational = client.recv(64 * 1024)
+                assert informational.startswith(b"HTTP/1.1 100 Continue\r\n")
+                client.sendall(b"bo")
+                client.sendall(b"dy")
+                response = receive_socket_response(client)
+        finally:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+    assert_http_response(response, 404, b"not found\n")
+
+
+def test_asyncio_buffered_server_uses_callbacks_and_cleans_up() -> None:
+    example = (
+        Path(__file__).parents[3] / "examples" / "python" / "asyncio_buffered_server.py"
+    )
+    namespace = runpy.run_path(str(example))
+    protocol_type = namespace["BufferedHTTPProtocol"]
+
+    async def exercise_server() -> None:
+        loop = asyncio.get_running_loop()
+        protocols = []
+
+        class ObservedProtocol(protocol_type):
+            def __init__(self) -> None:
+                super().__init__()
+                self.get_buffer_calls = 0
+                self.buffer_updated_calls = 0
+                self.eof_calls = 0
+                self.lost_calls = 0
+
+            def get_buffer(self, sizehint: int) -> h11r.ReceiveBuffer:
+                self.get_buffer_calls += 1
+                return super().get_buffer(sizehint)
+
+            def buffer_updated(self, nbytes: int) -> None:
+                self.buffer_updated_calls += 1
+                super().buffer_updated(nbytes)
+
+            def eof_received(self) -> None:
+                self.eof_calls += 1
+                super().eof_received()
+
+            def connection_lost(self, exc: Exception | None) -> None:
+                self.lost_calls += 1
+                super().connection_lost(exc)
+
+        def protocol_factory() -> asyncio.BufferedProtocol:
+            protocol = ObservedProtocol()
+            protocols.append(protocol)
+            return protocol
+
+        server = await loop.create_server(protocol_factory, "127.0.0.1", 0)
+        if not server.sockets:
+            raise RuntimeError("asyncio did not create a listening socket")
+        port = server.sockets[0].getsockname()[1]
+
+        async def exchange(request: bytes) -> bytes:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(request)
+            await writer.drain()
+            response = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            return response
+
+        try:
+            success = await exchange(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            assert_http_response(success, 200, b"hello from h11r\n")
+
+            malformed = await exchange(b"NOT HTTP\r\n\r\n")
+            assert_http_response(malformed, 400, b"bad request\n")
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write_eof()
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0)
+
+            assert len(protocols) == 3
+            for protocol in protocols:
+                assert protocol.get_buffer_calls > 0
+                assert protocol.lost_calls == 1
+                assert protocol.pending is None
+                assert protocol.transport is None
+            for protocol in protocols[:2]:
+                assert protocol.buffer_updated_calls > 0
+            assert protocols[-1].eof_calls == 1
         finally:
             server.close()
             await server.wait_closed()

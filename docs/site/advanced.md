@@ -12,6 +12,7 @@ has the matching need.
 | Need | h11r feature |
 | --- | --- |
 | Process a body without collecting it | `Data` events and incremental `send_data()` calls |
+| Let a transport fill recycled receive storage | `receive_buffer(size)` |
 | Collect one bounded body contiguously | `collect_body(max_bytes=...)` |
 | Pass a transport-owned body object through `h11r` | `send_data_parts()` |
 | Accept queued requests without reordering responses | `PAUSED` and `start_next_cycle()` |
@@ -46,6 +47,30 @@ Success ends with `streamed 36 bytes without collecting the body`.
 
 [Read `streaming_body.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/streaming_body.py)
 
+## Recycle receive storage
+
+When a transport supports caller-provided storage, acquire a connection-owned
+receive lease, fill it, and commit only the initialized prefix:
+
+```python
+with connection.receive_buffer(64 * 1024) as receive_buffer:
+    received = transport.recv_into(receive_buffer)
+    receive_buffer.commit(received)
+```
+
+A zero-byte commit records EOF, just as `receive_data(b"")` does. If the
+transport operation fails or connection loss abandons a pending lease, abort
+it so the connection reservation is released. Do not retain a `memoryview` or
+other buffer export across `commit()`.
+
+The synchronous teaching adapter applies this pattern to `socket.recv_into()`;
+the buffered asyncio adapter maps lease acquisition, commit, EOF, and abort to
+the corresponding `asyncio.BufferedProtocol` callbacks. Both collect one
+bounded request body, answer once, and close.
+
+[Read `receive_buffer_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/receive_buffer_server.py) ·
+[Read `asyncio_buffered_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_buffered_server.py)
+
 ## Collect one bounded body
 
 After `next_event()` returns a `Request` or final `Response`, opt into
@@ -76,6 +101,12 @@ and `observed_bytes` attributes. Stop receiving and send an error response or
 close the connection after a late abort or collection failure. Applications
 that can process incrementally should keep using `Data` events so memory use
 does not scale with the complete body.
+
+The complete asyncio streams example exposes each request head, sends
+`100 Continue` when needed, and then uses this collector with a one-megabyte
+application limit.
+
+[Read `asyncio_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_server.py)
 
 ## Pass through a transport-owned body
 

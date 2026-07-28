@@ -124,9 +124,10 @@ uv run --locked --group benchmark python \
   crates/h11r-python/benchmarks/compare_h11.py
 ```
 
-The receive-buffer benchmark isolates one 64 KiB `receive_data()` call and its
-`Data` event at the Python/Rust boundary. Run it against a release build and
-save the full pyperf result:
+The focused receive benchmark retains 64 KiB Python/Rust boundary cases,
+compares `recv()` with `recv_into(ReceiveBuffer)` over a socketpair, and
+compares streaming collection with `BodyCollector` for a fragmented 1 MiB
+body. Run it against a release build and save the full pyperf result:
 
 ```console
 uv run --locked --group benchmark python \

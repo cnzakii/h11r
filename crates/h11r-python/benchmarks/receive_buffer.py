@@ -1,10 +1,20 @@
-"""Benchmark focused Python receive and full-body collection paths."""
+"""Benchmark focused Python receive and full-body collection paths.
+
+The 64 KiB boundary cases isolate Python-to-Rust input choices. A matching
+socketpair pair includes ``recv()`` or ``recv_into()`` and completes one
+request/response cycle per call. The collection cases compare streaming into a
+``bytearray`` with ``BodyCollector``, including a 1 MiB body in 32 KiB
+fragments.
+"""
 
 from __future__ import annotations
 
+import queue
+import socket
 import subprocess
 import sys
 from collections.abc import Callable
+from threading import Event, Thread
 
 import h11r
 import pyperf
@@ -116,6 +126,66 @@ def receive_buffer_workload() -> Callable[[], None]:
     return receive_reused_lease
 
 
+class SocketpairWorkload:
+    """Parse equivalent 64 KiB requests read from a synchronized socketpair."""
+
+    def __init__(self, *, receive_into: bool) -> None:
+        self.receive_into = receive_into
+        self.connection = h11r.Connection(h11r.Role.SERVER)
+        self.request = collection_head(CHUNK_SIZE) + b"x" * CHUNK_SIZE
+        self.reader, self.writer = socket.socketpair()
+        self.requests: queue.SimpleQueue[bool | None] = queue.SimpleQueue()
+        self.stopping = Event()
+        self.feeder = Thread(target=self._feed, daemon=True)
+        self.feeder.start()
+
+    def _feed(self) -> None:
+        try:
+            while not self.stopping.is_set():
+                requested = self.requests.get()
+                if requested is None:
+                    return
+                self.writer.sendall(self.request)
+        except OSError:
+            if not self.stopping.is_set():
+                raise
+
+    def run(self) -> None:
+        self.requests.put(True)
+        request_seen = False
+        body_size = 0
+
+        while True:
+            event = self.connection.next_event()
+            if event is h11r.ReceiveStatus.NEED_DATA:
+                if self.receive_into:
+                    with self.connection.receive_buffer(CHUNK_SIZE) as receive_buffer:
+                        received = self.reader.recv_into(receive_buffer)
+                        receive_buffer.commit(received)
+                else:
+                    self.connection.receive_data(self.reader.recv(CHUNK_SIZE))
+            elif isinstance(event, h11r.Request):
+                request_seen = True
+            elif isinstance(event, h11r.Data):
+                body_size += len(event.data)
+            elif isinstance(event, h11r.EndOfMessage):
+                if not request_seen or body_size != CHUNK_SIZE:
+                    raise AssertionError("socketpair paths parsed different requests")
+                self.connection.send_response(204)
+                self.connection.end_of_message()
+                self.connection.start_next_cycle()
+                return
+            else:
+                raise AssertionError(f"expected request event, got {event!r}")
+
+    def close(self) -> None:
+        self.stopping.set()
+        self.requests.put(None)
+        self.reader.close()
+        self.writer.close()
+        self.feeder.join(timeout=1)
+
+
 class CollectionWorkload:
     def __init__(
         self,
@@ -203,6 +273,24 @@ def main() -> None:
     runner.bench_func("receive_data/reused_memoryview_64k", memoryview_workload())
     runner.bench_func("receive_data/reused_bytearray_64k", bytearray_workload())
     runner.bench_func("receive_buffer/reused_lease_64k", receive_buffer_workload())
+
+    socket_bytes = SocketpairWorkload(receive_into=False)
+    try:
+        runner.bench_func(
+            "socketpair/recv_receive_data_64k",
+            socket_bytes.run,
+        )
+    finally:
+        socket_bytes.close()
+
+    socket_buffer = SocketpairWorkload(receive_into=True)
+    try:
+        runner.bench_func(
+            "socketpair/recv_into_receive_buffer_64k",
+            socket_buffer.run,
+        )
+    finally:
+        socket_buffer.close()
 
     streaming = CollectionWorkload()
     runner.bench_func(

@@ -126,11 +126,12 @@ Use the runnable examples when you need a specific integration:
 | Goal | Example |
 | --- | --- |
 | Process a body incrementally and validate trailers | [`streaming_body.py`][streaming-example] |
-| Collect a bounded body after exposing its request head | [`asyncio_server.py`][asyncio-example] |
 | Preserve response order for pipelined requests | [`pipelining.py`][pipelining-example] |
-| Use `sendfile()` and a reusable receive lease | [`zero_copy_body.py`][zero-copy-example] |
+| Pass a transport-owned file region through to `sendfile()` | [`zero_copy_body.py`][zero-copy-example] |
 | Hand a successful WebSocket Upgrade to `wsproto` | [`websocket_upgrade.py`][upgrade-example] |
-| Build a complete teaching server with `asyncio` streams | [`asyncio_server.py`][asyncio-example] |
+| Build a collector-based teaching server with `asyncio` streams | [`asyncio_server.py`][asyncio-example] |
+| Read into a receive lease with `socket.recv_into()` | [`receive_buffer_server.py`][receive-buffer-example] |
+| Supply receive leases to `asyncio.BufferedProtocol` | [`asyncio_buffered_server.py`][buffered-asyncio-example] |
 
 ## Performance
 
@@ -202,6 +203,8 @@ MIT
 [zero-copy-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/zero_copy_body.py
 [upgrade-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/websocket_upgrade.py
 [asyncio-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/asyncio_server.py
+[receive-buffer-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/receive_buffer_server.py
+[buffered-asyncio-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/asyncio_buffered_server.py
 [protocol-model]: https://h11r.readthedocs.io/en/stable/concepts/
 [integration-guide]: https://h11r.readthedocs.io/en/stable/integration/
 [advanced-guide]: https://h11r.readthedocs.io/en/stable/advanced/

@@ -56,11 +56,6 @@ compatible transport.
       heading_level: 3
       members: false
 
-::: h11r.BodyTooLarge
-    options:
-      heading_level: 3
-      members: false
-
 ::: h11r.State
     options:
       heading_level: 3
@@ -116,6 +111,11 @@ compatible transport.
       members: false
 
 ::: h11r.RemoteProtocolError
+    options:
+      heading_level: 3
+      members: false
+
+::: h11r.BodyTooLarge
     options:
       heading_level: 3
       members: false

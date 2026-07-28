@@ -225,8 +225,9 @@ connection between these ordered operations.
 | Goal | Example |
 | --- | --- |
 | Follow a client/server exchange over a local stream | [`round_trip.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/round_trip.py) |
-| Build a teaching server with `asyncio` streams | [`asyncio_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_server.py) |
-| Use `recv_into()` with recycled storage | [`zero_copy_body.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/zero_copy_body.py) |
+| Build a collector-based teaching server with `asyncio` streams | [`asyncio_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_server.py) |
+| Use `recv_into()` with a receive lease | [`receive_buffer_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/receive_buffer_server.py) |
+| Implement `asyncio.BufferedProtocol` callbacks | [`asyncio_buffered_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_buffered_server.py) |
 
 Run any example from a repository checkout by replacing the filename in this
 command:

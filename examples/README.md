@@ -48,7 +48,9 @@ HTTP state. Finish the current response and call `start_next_cycle()`, or hand
 the transport to the selected protocol after a successful Upgrade.
 
 When a transport read returns `b""`, pass that empty value to `receive_data()`.
-This lets h11r distinguish a clean close from a truncated HTTP message.
+For a receive lease, commit zero bytes instead. Either form lets h11r
+distinguish a clean close from a truncated HTTP message. Abort an acquired
+lease when the transport closes without reporting a completed read.
 
 ## Recommended learning path
 
@@ -60,7 +62,9 @@ This lets h11r distinguish a clean close from a truncated HTTP message.
 | [`pipelining.py`](python/pipelining.py) | Why buffered pipelined requests pause until the preceding response finishes |
 | [`zero_copy_body.py`](python/zero_copy_body.py) | A file-region proxy and `socket.sendfile()` on the way out, `socket.recv_into()` with a reused buffer on the way in |
 | [`websocket_upgrade.py`](python/websocket_upgrade.py) | WebSocket handshake validation, HTTP 101, `trailing_data`, and wsproto ownership after handoff |
-| [`asyncio_server.py`](python/asyncio_server.py) | A real asynchronous server loop with back-pressure, timeouts, limits, errors, keep-alive, and shutdown |
+| [`asyncio_server.py`](python/asyncio_server.py) | A collector-based asynchronous server loop with back-pressure, timeouts, limits, errors, keep-alive, and shutdown |
+| [`receive_buffer_server.py`](python/receive_buffer_server.py) | A one-request `recv_into()` adapter using connection-owned receive leases |
+| [`asyncio_buffered_server.py`](python/asyncio_buffered_server.py) | A one-request `asyncio.BufferedProtocol` adapter using its buffer callbacks |
 
 Read the files in this order if h11r is new to you. If you already have a
 transport adapter, jump directly to the protocol behavior you need.
@@ -100,6 +104,17 @@ Transport reads, HTTP chunks, and `Data` events do not have a one-to-one
 relationship. Applications must handle any number of `Data` events and use
 `EndOfMessage`—not a short read—to recognize completion.
 
+Applications that require one contiguous body can call
+`collect_body(max_bytes=...)` after the request or final response head. The
+collector consumes body events internally and returns a read-only `memoryview`
+and trailers at the message boundary. The required bound is application policy;
+exceeding it raises `BodyTooLarge`.
+
+For transports that fill caller-provided storage, `receive_buffer(size)`
+reserves reusable connection-owned storage. Acquire the lease, let the
+transport fill it, then commit the initialized byte count. Do not retain a
+buffer export across `commit()`.
+
 ## The asyncio server
 
 Start the server and leave it running:
@@ -122,8 +137,8 @@ The example is organized by ownership:
    `next_event()` drains protocol events before awaiting another socket read.
 2. `write()` pairs transport writes with `drain()`, allowing a slow peer to
    apply back-pressure to that connection task.
-3. `read_request()` handles request events, body fragments, EOF, the body
-   limit, and `Expect: 100-continue`.
+3. `read_request()` exposes the request head, handles `100 Continue`, then uses
+   a bounded body collector while also handling EOF and the idle timeout.
 4. `handle_connection()` owns lifecycle policy: route a request, send its
    response, decide whether reuse is legal, and only then call
    `start_next_cycle()` to release a pipelined request.
@@ -139,8 +154,9 @@ of accumulating them as this small router does.
 
 The public examples use normal event dispatch and explicit error handling;
 they do not contain test assertions. Automated tests execute every focused
-example and exercise the asyncio server over a real loopback TCP connection,
-including `100 Continue`, keep-alive, HEAD, a 404 response, and malformed input.
+example and exercise all three servers over real loopback TCP connections,
+including buffer callbacks, EOF cleanup, `100 Continue`, keep-alive, HEAD,
+bounded-body rejection, and malformed input.
 
 The examples intentionally remain readable rather than production-complete.
 Before deploying similar code, add the security, observability, cancellation,
