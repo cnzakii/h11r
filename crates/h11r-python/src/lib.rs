@@ -1,11 +1,12 @@
 //! Python extension module for `h11r`.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 mod api;
+mod buffer;
 
 #[pymodule(gil_used = false)]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {

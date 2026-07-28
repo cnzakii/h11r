@@ -76,3 +76,67 @@ def test_independent_connections_do_not_share_state() -> None:
         futures = [executor.submit(exchange, worker) for worker in range(WORKERS)]
         for future in futures:
             future.result()
+
+
+@pytest.mark.skipif(not FREE_THREADED, reason="requires free-threaded CPython")
+def test_receive_buffer_reservation_and_export_are_race_safe() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    lease = connection.receive_buffer(64).acquire()
+    exported = memoryview(lease)
+    barrier = Barrier(3)
+
+    def mutate_connection() -> type[BaseException]:
+        barrier.wait()
+        try:
+            connection.receive_data(b"")
+        except BaseException as error:
+            return type(error)
+        raise AssertionError("reserved connection mutation unexpectedly succeeded")
+
+    def commit_exported_buffer() -> type[BaseException]:
+        barrier.wait()
+        try:
+            lease.commit(0)
+        except BaseException as error:
+            return type(error)
+        raise AssertionError("commit unexpectedly raced an active export")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        mutation = executor.submit(mutate_connection)
+        commit = executor.submit(commit_exported_buffer)
+        barrier.wait()
+        assert mutation.result() is RuntimeError
+        assert commit.result() is BufferError
+
+    exported.release()
+    lease.abort()
+    connection.receive_data(b"")
+
+
+@pytest.mark.skipif(not FREE_THREADED, reason="requires free-threaded CPython")
+def test_body_collector_and_receive_data_are_race_safe() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+    collector = connection.collect_body(max_bytes=4)
+    barrier = Barrier(3)
+
+    def receive() -> None:
+        barrier.wait()
+        connection.receive_data(b"body")
+
+    def poll() -> object:
+        barrier.wait()
+        return collector.next()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receiving = executor.submit(receive)
+        polling = executor.submit(poll)
+        barrier.wait()
+        receiving.result()
+        result = polling.result()
+
+    if result is h11r.ReceiveStatus.NEED_DATA:
+        result = collector.next()
+    assert isinstance(result, h11r.CollectedBody)
+    assert bytes(result.data) == b"body"

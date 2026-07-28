@@ -1,12 +1,16 @@
 //! Python bindings for the HTTP/1.1 library.
 
+use crate::buffer::{PyBodyBuffer, PyReceiveBuffer, ReceiveBufferLifecycle, ReceiveBufferState};
 use h11r as core;
 use h11r::{Method, StatusCode};
 use pyo3::PyTypeInfo;
-use pyo3::buffer::{PyUntypedBuffer, ReadOnlyCell};
-use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError, PyValueError};
+use pyo3::buffer::PyBuffer;
+use pyo3::exceptions::{
+    PyAttributeError, PyException, PyMemoryError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyMemoryView, PyModule, PyString, PyTuple};
+use std::sync::{Mutex, MutexGuard};
 
 pyo3::create_exception!(
     h11r,
@@ -28,6 +32,16 @@ pyo3::create_exception!(
      Attributes:\n    \
          suggested_status_code (int | None): A suitable HTTP response status, \
          when one is known."
+);
+pyo3::create_exception!(
+    h11r,
+    BodyTooLarge,
+    PyException,
+    "A collected message body exceeded its configured byte limit.\n\n\
+     Attributes:\n    \
+         max_bytes (int): The configured body limit.\n    \
+         observed_bytes (int): Bytes observed through the fragment that \
+         exceeded the limit."
 );
 
 /// An HTTP actor role.
@@ -397,11 +411,36 @@ impl PyConnectionClosed {
     }
 }
 
+/// One complete decoded message body and its trailers.
+///
+/// `data` is a read-only, byte-sized, C-contiguous `memoryview` backed by
+/// private immutable storage. Use `bytes(body.data)` when an explicit Python
+/// bytes copy is required.
+///
+/// `CollectedBody` cannot be constructed directly.
+///
+/// Attributes:
+///     data (memoryview): The complete decoded body.
+///     trailers (tuple[tuple[bytes, bytes], ...]): Ordered trailer fields.
+#[pyclass(
+    name = "CollectedBody",
+    module = "h11r",
+    frozen,
+    get_all,
+    skip_from_py_object
+)]
+#[derive(Debug)]
+struct PyCollectedBody {
+    data: Py<PyMemoryView>,
+    trailers: Py<PyTuple>,
+}
+
 /// A Sans-I/O HTTP/1 connection.
 ///
-/// Supply transport bytes with `receive_data()`, poll semantic events with
-/// `next_event()`, and write bytes returned by the send methods. Client and
-/// server state are tracked together regardless of the local role.
+/// Supply transport bytes with `receive_data()` or the optional
+/// `receive_buffer()` lease, poll semantic events with `next_event()`, and
+/// write bytes returned by the send methods. Client and server state are
+/// tracked together regardless of the local role.
 ///
 /// Construct a connection as:
 ///
@@ -431,9 +470,234 @@ impl PyConnectionClosed {
 ///
 /// Raises:
 ///     ValueError: If any inbound limit is zero.
-#[pyclass(name = "Connection", module = "h11r")]
+#[pyclass(name = "Connection", module = "h11r", frozen)]
 #[derive(Debug)]
-struct PyConnection(core::Connection);
+pub(super) struct PyConnection {
+    state: Mutex<ConnectionState>,
+}
+
+#[derive(Debug)]
+pub(super) struct ConnectionState {
+    pub(super) core: core::Connection,
+    pub(super) receive_scratch: Option<Vec<u8>>,
+    pub(super) receive_reserved: bool,
+    collection_eligible: bool,
+    collector_active: bool,
+    pub(super) receive_unusable: bool,
+}
+
+impl PyConnection {
+    pub(super) fn lock(&self) -> MutexGuard<'_, ConnectionState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn ensure_mutable(&self) -> PyResult<()> {
+        if self.lock().receive_reserved {
+            Err(PyRuntimeError::new_err(
+                "connection is reserved by a receive buffer",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn mutate<R>(
+        &self,
+        operation: impl FnOnce(&mut core::Connection) -> PyResult<R>,
+    ) -> PyResult<R> {
+        let mut state = self.lock();
+        if state.receive_reserved {
+            return Err(PyRuntimeError::new_err(
+                "connection is reserved by a receive buffer",
+            ));
+        }
+        operation(&mut state.core)
+    }
+
+    fn mutate_receive<R>(
+        &self,
+        operation: impl FnOnce(&mut core::Connection) -> PyResult<R>,
+    ) -> PyResult<R> {
+        let mut state = self.lock();
+        ensure_receive_available(&state)?;
+        operation(&mut state.core)
+    }
+
+    pub(super) fn return_receive_scratch(&self, scratch: Vec<u8>) {
+        let mut state = self.lock();
+        state.receive_scratch = Some(scratch);
+        state.receive_reserved = false;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BodyCollectorLifecycle {
+    Active,
+    Finished,
+    Aborted,
+}
+
+#[derive(Debug)]
+struct BodyCollectorState {
+    data: Vec<u8>,
+    consumed: bool,
+    lifecycle: BodyCollectorLifecycle,
+}
+
+/// An opt-in full-body receiver for the current peer message.
+///
+/// Obtain a collector with `Connection.collect_body()` immediately after
+/// receiving a request or final response head. `next()` consumes body data
+/// internally and returns `ReceiveStatus.NEED_DATA` until the message ends.
+///
+/// `BodyCollector` cannot be constructed directly.
+#[pyclass(name = "BodyCollector", module = "h11r", frozen)]
+#[derive(Debug)]
+struct PyBodyCollector {
+    connection: Py<PyConnection>,
+    max_bytes: usize,
+    state: Mutex<BodyCollectorState>,
+}
+
+impl PyBodyCollector {
+    fn lock(&self) -> MutexGuard<'_, BodyCollectorState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn abort_inner(&self) {
+        let mut collector = self.lock();
+        if collector.lifecycle != BodyCollectorLifecycle::Active {
+            return;
+        }
+        let mut connection = self.connection.get().lock();
+        connection.collector_active = false;
+        if collector.consumed {
+            connection.receive_unusable = true;
+        }
+        collector.lifecycle = BodyCollectorLifecycle::Aborted;
+    }
+
+    fn fail_after_consumption(
+        collector: &mut BodyCollectorState,
+        connection: &mut ConnectionState,
+    ) {
+        connection.collector_active = false;
+        connection.receive_unusable = true;
+        collector.lifecycle = BodyCollectorLifecycle::Aborted;
+    }
+}
+
+impl Drop for PyBodyCollector {
+    fn drop(&mut self) {
+        self.abort_inner();
+    }
+}
+
+#[pymethods]
+impl PyBodyCollector {
+    /// Consume available body fragments and return a completed body or `NEED_DATA`.
+    ///
+    /// Raises:
+    ///     BodyTooLarge: If the body exceeds the configured limit.
+    ///     MemoryError: If contiguous body storage cannot be grown.
+    ///     RemoteProtocolError: If peer bytes violate HTTP syntax or framing.
+    ///     RuntimeError: If the collector is already finished or aborted.
+    fn next(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let mut collector = self.lock();
+        if collector.lifecycle != BodyCollectorLifecycle::Active {
+            return Err(PyRuntimeError::new_err(
+                "body collector is already finished or aborted",
+            ));
+        }
+
+        let mut connection = self.connection.get().lock();
+        if connection.receive_reserved {
+            return Err(PyRuntimeError::new_err(
+                "connection is reserved by a receive buffer",
+            ));
+        }
+        if connection.receive_unusable {
+            collector.lifecycle = BodyCollectorLifecycle::Aborted;
+            connection.collector_active = false;
+            return Err(receive_unusable_error());
+        }
+
+        loop {
+            let polled = match connection.core.next_event() {
+                Ok(polled) => polled,
+                Err(error) => {
+                    Self::fail_after_consumption(&mut collector, &mut connection);
+                    return Err(remote_error(py, error));
+                }
+            };
+            match polled {
+                core::NextEvent::NeedData => {
+                    return py_member::<PyReceiveStatus>(py, "NEED_DATA");
+                }
+                core::NextEvent::Paused => {
+                    Self::fail_after_consumption(&mut collector, &mut connection);
+                    return Err(PyRuntimeError::new_err(
+                        "HTTP parsing paused before the collected body ended",
+                    ));
+                }
+                core::NextEvent::Event(core::Event::Data(value)) => {
+                    collector.consumed = true;
+                    let observed_bytes = collector.data.len().saturating_add(value.data.len());
+                    if observed_bytes > self.max_bytes {
+                        Self::fail_after_consumption(&mut collector, &mut connection);
+                        return Err(body_too_large_error(py, self.max_bytes, observed_bytes));
+                    }
+                    if collector.data.try_reserve(value.data.len()).is_err() {
+                        Self::fail_after_consumption(&mut collector, &mut connection);
+                        return Err(PyMemoryError::new_err(
+                            "could not allocate collected body storage",
+                        ));
+                    }
+                    collector.data.extend_from_slice(value.data);
+                }
+                core::NextEvent::Event(core::Event::EndOfMessage(value)) => {
+                    let storage = std::mem::take(&mut collector.data);
+                    let completed = (|| {
+                        let trailers = py_headers(py, &value.trailers)?.unbind();
+                        let owner = Py::new(py, PyBodyBuffer { data: storage })?;
+                        let data = PyMemoryView::from(owner.bind(py))?.unbind();
+                        Ok(Py::new(py, PyCollectedBody { data, trailers })?.into_any())
+                    })();
+                    match completed {
+                        Ok(body) => {
+                            collector.lifecycle = BodyCollectorLifecycle::Finished;
+                            connection.collector_active = false;
+                            return Ok(body);
+                        }
+                        Err(error) => {
+                            Self::fail_after_consumption(&mut collector, &mut connection);
+                            return Err(error);
+                        }
+                    }
+                }
+                core::NextEvent::Event(_) => {
+                    Self::fail_after_consumption(&mut collector, &mut connection);
+                    return Err(PyRuntimeError::new_err(
+                        "unexpected event while collecting a message body",
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Stop collection.
+    ///
+    /// Aborting before a body fragment was consumed leaves ordinary streaming
+    /// receive processing available. Aborting later makes receive processing
+    /// unusable for this connection.
+    fn abort(&self) {
+        self.abort_inner();
+    }
+}
 
 #[pymethods]
 impl PyConnection {
@@ -442,7 +706,16 @@ impl PyConnection {
     fn new(role: PyRole, max_head_bytes: usize, max_header_count: usize) -> PyResult<Self> {
         let limits = core::Limits::new(max_head_bytes, max_header_count)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        Ok(Self(core::Connection::new(role.into(), limits)))
+        Ok(Self {
+            state: Mutex::new(ConnectionState {
+                core: core::Connection::new(role.into(), limits),
+                receive_scratch: Some(Vec::new()),
+                receive_reserved: false,
+                collection_eligible: false,
+                collector_active: false,
+                receive_unusable: false,
+            }),
+        })
     }
 
     /// Append bytes received from the peer; empty bytes mark EOF.
@@ -452,15 +725,69 @@ impl PyConnection {
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
+    ///     ValueError: If the buffer is not C-contiguous.
+    ///     BufferError: If the buffer items are not single bytes.
     ///     LocalProtocolError: If non-empty data follows EOF.
-    fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        with_buffer_bytes(data, |data| match data {
-            BufferBytes::Borrowed(bytes) => self.0.receive_data(bytes),
-            BufferBytes::Cells(cells) => self
-                .0
-                .receive_data_iter(cells.iter().map(ReadOnlyCell::get)),
+    fn receive_data(&self, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        {
+            let state = self.lock();
+            ensure_receive_available(&state)?;
+        }
+        with_buffer_bytes(data, |bytes| {
+            self.mutate_receive(|connection| connection.receive_data(bytes).map_err(local_error))
         })?
-        .map_err(local_error)
+    }
+
+    /// Reserve reusable writable storage for the next transport read.
+    ///
+    /// The connection remains reserved until the returned lease is committed
+    /// or aborted. Call `ReceiveBuffer.acquire()` before exporting the buffer.
+    ///
+    /// Args:
+    ///     size (int): Positive buffer length.
+    ///
+    /// Returns:
+    ///     buffer (ReceiveBuffer): A non-constructible receive lease.
+    ///
+    /// Raises:
+    ///     ValueError: If `size` is zero or negative.
+    ///     OverflowError: If `size` does not fit in a platform length.
+    ///     MemoryError: If scratch storage cannot be allocated.
+    ///     RuntimeError: If another receive buffer already reserves this connection.
+    fn receive_buffer(
+        slf: Py<Self>,
+        py: Python<'_>,
+        size: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyReceiveBuffer>> {
+        let size = positive_platform_length(size, "size")?;
+        let mut connection = slf.get().lock();
+        ensure_receive_available(&connection)?;
+
+        let mut scratch = connection.receive_scratch.take().unwrap_or_default();
+        // Reserve against the current length, not the capacity: `try_reserve`
+        // guarantees room for `len + additional`, which must cover the later
+        // resize even when a smaller prior lease left spare capacity.
+        let additional = size.saturating_sub(scratch.len());
+        if additional != 0 && scratch.try_reserve_exact(additional).is_err() {
+            connection.receive_scratch = Some(scratch);
+            return Err(PyMemoryError::new_err("could not allocate receive buffer"));
+        }
+        scratch.resize(size, 0);
+        connection.receive_reserved = true;
+        drop(connection);
+
+        Py::new(
+            py,
+            PyReceiveBuffer {
+                connection: slf,
+                size,
+                state: Mutex::new(ReceiveBufferState {
+                    scratch: Some(scratch),
+                    exports: 0,
+                    lifecycle: ReceiveBufferLifecycle::Reserved,
+                }),
+            },
+        )
     }
 
     /// Return the next peer event or a receive status.
@@ -474,16 +801,93 @@ impl PyConnection {
     /// Raises:
     ///     RemoteProtocolError: If peer bytes violate HTTP syntax, framing,
     ///         configured limits, or protocol state.
-    fn next_event(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match self
-            .0
+    fn next_event(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let mut state = self.lock();
+        ensure_receive_available(&state)?;
+        if state.collector_active {
+            return Err(PyRuntimeError::new_err(
+                "connection has an active body collector",
+            ));
+        }
+        state.collection_eligible = false;
+        let polled = state
+            .core
             .next_event()
-            .map_err(|error| remote_error(py, error))?
-        {
+            .map_err(|error| remote_error(py, error))?;
+        match polled {
             core::NextEvent::NeedData => py_member::<PyReceiveStatus>(py, "NEED_DATA"),
             core::NextEvent::Paused => py_member::<PyReceiveStatus>(py, "PAUSED"),
+            core::NextEvent::Event(core::Event::Request(value)) => {
+                let event = Py::new(py, PyRequest::from_core(py, value)?)?.into_any();
+                state.collection_eligible = true;
+                Ok(event)
+            }
+            core::NextEvent::Event(core::Event::Response(value)) => {
+                let event =
+                    Py::new(py, PyResponse(PyResponseValue::from_core(py, value)?))?.into_any();
+                state.collection_eligible = true;
+                Ok(event)
+            }
             core::NextEvent::Event(event) => event_to_py(py, event),
         }
+    }
+
+    /// Start opt-in full-body collection for the current peer message.
+    ///
+    /// This is valid only immediately after `next_event()` returned a request
+    /// or final response head, before any body event was returned.
+    ///
+    /// Args:
+    ///     max_bytes (int): Required nonnegative decoded body byte limit.
+    ///
+    /// Returns:
+    ///     collector (BodyCollector): A non-constructible collector.
+    ///
+    /// Raises:
+    ///     ValueError: If `max_bytes` is negative.
+    ///     OverflowError: If `max_bytes` does not fit in a platform length.
+    ///     RuntimeError: If collection cannot start at the current receive point.
+    #[pyo3(signature = (*, max_bytes))]
+    fn collect_body(
+        slf: Py<Self>,
+        py: Python<'_>,
+        max_bytes: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyBodyCollector>> {
+        let max_bytes = nonnegative_platform_length(max_bytes, "max_bytes")?;
+        let mut connection = slf.get().lock();
+        ensure_receive_available(&connection)?;
+        if connection.collector_active {
+            return Err(PyRuntimeError::new_err(
+                "connection already has an active body collector",
+            ));
+        }
+        if !connection.collection_eligible {
+            return Err(PyRuntimeError::new_err(
+                "body collection must start immediately after a request or final response",
+            ));
+        }
+        connection.collection_eligible = false;
+        connection.collector_active = true;
+        drop(connection);
+
+        let collector = Py::new(
+            py,
+            PyBodyCollector {
+                connection: slf.clone_ref(py),
+                max_bytes,
+                state: Mutex::new(BodyCollectorState {
+                    data: Vec::new(),
+                    consumed: false,
+                    lifecycle: BodyCollectorLifecycle::Active,
+                }),
+            },
+        );
+        if collector.is_err() {
+            let mut connection = slf.get().lock();
+            connection.collector_active = false;
+            connection.collection_eligible = true;
+        }
+        collector
     }
 
     /// Serialize a request head.
@@ -509,23 +913,26 @@ impl PyConnection {
     ///     LocalProtocolError: If the head or current state is invalid.
     #[pyo3(signature = (method, target, headers, *, http_version = None))]
     fn send_request(
-        &mut self,
+        &self,
         py: Python<'_>,
         method: &Bound<'_, PyAny>,
         target: &Bound<'_, PyAny>,
         headers: &Bound<'_, PyAny>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
+        self.ensure_mutable()?;
         let request = core::Request {
             method: extract_method(method)?,
             target: text_or_buffer(py, target)?,
             headers: extract_headers(py, Some(headers))?,
             http_version: extract_version(py, http_version)?,
         };
-        self.0
-            .send_request(&request)
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        self.mutate(|connection| {
+            connection
+                .send_request(&request)
+                .map(|bytes| PyBytes::new(py, &bytes).unbind())
+                .map_err(local_error)
+        })
     }
 
     /// Serialize an informational response head.
@@ -549,23 +956,26 @@ impl PyConnection {
     ///     LocalProtocolError: If the response or current state is invalid.
     #[pyo3(signature = (status_code, headers = None, *, reason = None, http_version = None))]
     fn send_informational_response(
-        &mut self,
+        &self,
         py: Python<'_>,
         status_code: u16,
         headers: Option<&Bound<'_, PyAny>>,
         reason: Option<&Bound<'_, PyAny>>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
+        self.ensure_mutable()?;
         let response = core::InformationalResponse {
             status: status(status_code)?,
             reason: optional_bytes(py, reason)?,
             headers: extract_headers(py, headers)?,
             http_version: extract_version(py, http_version)?,
         };
-        self.0
-            .send_informational_response(&response)
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        self.mutate(|connection| {
+            connection
+                .send_informational_response(&response)
+                .map(|bytes| PyBytes::new(py, &bytes).unbind())
+                .map_err(local_error)
+        })
     }
 
     /// Serialize a final response head.
@@ -589,23 +999,26 @@ impl PyConnection {
     ///     LocalProtocolError: If the response or current state is invalid.
     #[pyo3(signature = (status_code, headers = None, *, reason = None, http_version = None))]
     fn send_response(
-        &mut self,
+        &self,
         py: Python<'_>,
         status_code: u16,
         headers: Option<&Bound<'_, PyAny>>,
         reason: Option<&Bound<'_, PyAny>>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
+        self.ensure_mutable()?;
         let response = core::Response {
             status: status(status_code)?,
             reason: optional_bytes(py, reason)?,
             headers: extract_headers(py, headers)?,
             http_version: extract_version(py, http_version)?,
         };
-        self.0
-            .send_response(&response)
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        self.mutate(|connection| {
+            connection
+                .send_response(&response)
+                .map(|bytes| PyBytes::new(py, &bytes).unbind())
+                .map_err(local_error)
+        })
     }
 
     /// Serialize body data into one bytes object.
@@ -619,21 +1032,19 @@ impl PyConnection {
     ///
     /// Raises:
     ///     TypeError: If `data` does not implement the buffer protocol.
+    ///     ValueError: If the buffer is not C-contiguous.
+    ///     BufferError: If the buffer items are not single bytes.
     ///     LocalProtocolError: If body data is forbidden or violates framing.
-    fn send_data(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Py<PyBytes>> {
-        let bytes = with_buffer_bytes(data, |data| match data {
-            BufferBytes::Borrowed(bytes) => self.0.send_data(bytes),
-            BufferBytes::Cells(cells) => {
-                let (prefix, suffix) = self.0.send_data_framing(cells.len())?;
-                let mut out = prefix;
-                out.reserve(cells.len() + suffix.len());
-                out.extend(cells.iter().map(ReadOnlyCell::get));
-                out.extend_from_slice(&suffix);
-                Ok(out)
-            }
+    fn send_data(&self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Py<PyBytes>> {
+        self.ensure_mutable()?;
+        with_buffer_bytes(data, |data| {
+            self.mutate(|connection| {
+                connection
+                    .send_data(data)
+                    .map(|bytes| PyBytes::new(py, &bytes).unbind())
+                    .map_err(local_error)
+            })
         })?
-        .map_err(local_error)?;
-        Ok(PyBytes::new(py, &bytes).unbind())
     }
 
     /// Return `(prefix, original_object, suffix)` without copying body bytes.
@@ -661,12 +1072,14 @@ impl PyConnection {
     ///         platform's address size.
     ///     LocalProtocolError: If body data is forbidden or violates framing.
     fn send_data_parts(
-        &mut self,
+        &self,
         py: Python<'_>,
         data: Py<PyAny>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>, Py<PyBytes>)> {
+        self.ensure_mutable()?;
         let length = body_nbytes(data.bind(py))?;
-        let (prefix, suffix) = self.0.send_data_framing(length).map_err(local_error)?;
+        let (prefix, suffix) =
+            self.mutate(|connection| connection.send_data_framing(length).map_err(local_error))?;
         Ok((
             PyBytes::new(py, &prefix).unbind(),
             data,
@@ -694,15 +1107,18 @@ impl PyConnection {
     ///     LocalProtocolError: If framing is incomplete or forbids trailers.
     #[pyo3(signature = (trailers = None))]
     fn end_of_message(
-        &mut self,
+        &self,
         py: Python<'_>,
         trailers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
+        self.ensure_mutable()?;
         let trailers = extract_headers(py, trailers)?;
-        self.0
-            .end_of_message(&trailers)
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        self.mutate(|connection| {
+            connection
+                .end_of_message(&trailers)
+                .map(|bytes| PyBytes::new(py, &bytes).unbind())
+                .map_err(local_error)
+        })
     }
 
     /// Reset a completed reusable exchange.
@@ -710,44 +1126,55 @@ impl PyConnection {
     /// Raises:
     ///     LocalProtocolError: If either actor is incomplete, reuse is disabled,
     ///         or a protocol switch is pending.
-    fn start_next_cycle(&mut self) -> PyResult<()> {
-        self.0.start_next_cycle().map_err(local_error)
+    fn start_next_cycle(&self) -> PyResult<()> {
+        let mut state = self.lock();
+        ensure_receive_available(&state)?;
+        if state.collector_active {
+            return Err(PyRuntimeError::new_err(
+                "connection has an active body collector",
+            ));
+        }
+        state.core.start_next_cycle().map_err(local_error)?;
+        state.collection_eligible = false;
+        Ok(())
     }
 
     /// Mark the local protocol actor as closed.
     ///
     /// Raises:
     ///     LocalProtocolError: If closing is invalid in the current local state.
-    fn close(&mut self) -> PyResult<()> {
-        self.0.close().map_err(local_error)
+    fn close(&self) -> PyResult<()> {
+        self.mutate(|connection| connection.close().map_err(local_error))
     }
 
     /// The local protocol actor's lifecycle state.
     #[getter]
     fn local_state(&self) -> PyState {
-        self.0.local_state().into()
+        self.lock().core.local_state().into()
     }
     /// The peer protocol actor's lifecycle state.
     #[getter]
     fn peer_state(&self) -> PyState {
-        self.0.peer_state().into()
+        self.lock().core.peer_state().into()
     }
     /// The most recently parsed peer HTTP version, if any.
     #[getter]
     fn peer_http_version<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0
+        self.lock()
+            .core
             .peer_http_version()
             .map(|version| py_version(py, version))
     }
     /// Whether the client is waiting for `100 Continue`.
     #[getter]
     fn client_is_waiting_for_100_continue(&self) -> bool {
-        self.0.client_is_waiting_for_100_continue()
+        self.lock().core.client_is_waiting_for_100_continue()
     }
     /// Buffered bytes beyond HTTP plus whether EOF was received.
     #[getter]
     fn trailing_data<'py>(&self, py: Python<'py>) -> (Bound<'py, PyBytes>, bool) {
-        let (data, eof) = self.0.trailing_data();
+        let state = self.lock();
+        let (data, eof) = state.core.trailing_data();
         (PyBytes::new(py, data), eof)
     }
 }
@@ -827,33 +1254,41 @@ fn extract_headers(
         .collect()
 }
 
-enum BufferBytes<'a> {
-    Borrowed(&'a [u8]),
-    Cells(&'a [ReadOnlyCell<u8>]),
+/// Runs `consume` over the contents of a buffer-protocol object.
+///
+/// Immutable `bytes` are borrowed directly. Other buffers are copied through
+/// `ReadOnlyCell`, because arbitrary exporters may mutate their storage even
+/// while the GIL is held.
+fn with_buffer_bytes<R>(value: &Bound<'_, PyAny>, consume: impl FnOnce(&[u8]) -> R) -> PyResult<R> {
+    if let Ok(bytes) = value.cast::<PyBytes>() {
+        return Ok(consume(bytes.as_bytes()));
+    }
+    let buffer = PyBuffer::<u8>::get(value)?;
+    let Some(cells) = buffer.as_slice(value.py()) else {
+        return Err(PyValueError::new_err("expected a C-contiguous buffer"));
+    };
+    let copied: Vec<u8> = cells.iter().map(pyo3::buffer::ReadOnlyCell::get).collect();
+    Ok(consume(&copied))
 }
 
-/// Runs `consume` over a safe view of a buffer-protocol object.
-///
-/// Immutable `bytes` are borrowed directly. Contiguous, `u8`-compatible
-/// buffers expose cells whose values must be read individually because another
-/// thread may mutate them. Other buffers retain the previous copying behavior.
-fn with_buffer_bytes<R>(
-    value: &Bound<'_, PyAny>,
-    consume: impl FnOnce(BufferBytes<'_>) -> R,
-) -> PyResult<R> {
-    if let Ok(bytes) = value.cast::<PyBytes>() {
-        return Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())));
+fn positive_platform_length(value: &Bound<'_, PyAny>, name: &str) -> PyResult<usize> {
+    let length: isize = value.extract()?;
+    if length <= 0 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than zero"
+        )));
     }
-    let buffer = PyUntypedBuffer::get(value)?;
-    if let Ok(buffer) = buffer.as_typed::<u8>()
-        && let Some(cells) = buffer.as_slice(value.py())
-    {
-        return Ok(consume(BufferBytes::Cells(cells)));
+    Ok(length as usize)
+}
+
+pub(super) fn nonnegative_platform_length(value: &Bound<'_, PyAny>, name: &str) -> PyResult<usize> {
+    let length: isize = value.extract()?;
+    if length < 0 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must not be negative"
+        )));
     }
-    drop(buffer);
-    let view = PyMemoryView::from(value)?;
-    let bytes = view.call_method0("tobytes")?.cast_into::<PyBytes>()?;
-    Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())))
+    Ok(length as usize)
 }
 
 fn contiguous_buffer_len(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -893,10 +1328,7 @@ fn text_or_buffer(_py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
         }
         Ok(text.as_bytes().to_vec())
     } else {
-        with_buffer_bytes(value, |data| match data {
-            BufferBytes::Borrowed(bytes) => bytes.to_vec(),
-            BufferBytes::Cells(cells) => cells.iter().map(ReadOnlyCell::get).collect(),
-        })
+        with_buffer_bytes(value, <[u8]>::to_vec)
     }
 }
 
@@ -909,14 +1341,8 @@ fn extract_method(value: &Bound<'_, PyAny>) -> PyResult<Method> {
         return Method::from_bytes(text.as_bytes())
             .map_err(|error| PyValueError::new_err(error.to_string()));
     }
-    with_buffer_bytes(value, |data| match data {
-        BufferBytes::Borrowed(bytes) => Method::from_bytes(bytes),
-        BufferBytes::Cells(cells) => {
-            let bytes: Vec<_> = cells.iter().map(ReadOnlyCell::get).collect();
-            Method::from_bytes(&bytes)
-        }
-    })?
-    .map_err(|error| PyValueError::new_err(error.to_string()))
+    with_buffer_bytes(value, Method::from_bytes)?
+        .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 fn optional_bytes(py: Python<'_>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<u8>> {
@@ -950,8 +1376,36 @@ fn py_version(py: Python<'_>, value: core::Version) -> Bound<'_, PyBytes> {
 fn status(value: u16) -> PyResult<StatusCode> {
     StatusCode::from_u16(value).map_err(|error| PyValueError::new_err(error.to_string()))
 }
-fn local_error(error: core::LocalProtocolError) -> PyErr {
+pub(super) fn local_error(error: core::LocalProtocolError) -> PyErr {
     LocalProtocolError::new_err(error.to_string())
+}
+
+pub(super) fn ensure_receive_available(state: &ConnectionState) -> PyResult<()> {
+    if state.receive_reserved {
+        Err(PyRuntimeError::new_err(
+            "connection is reserved by a receive buffer",
+        ))
+    } else if state.receive_unusable {
+        Err(receive_unusable_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn receive_unusable_error() -> PyErr {
+    PyRuntimeError::new_err("connection receive processing is unusable")
+}
+
+fn body_too_large_error(py: Python<'_>, max_bytes: usize, observed_bytes: usize) -> PyErr {
+    let exception = BodyTooLarge::new_err("collected body exceeds max_bytes");
+    let value = exception.value(py);
+    if let Err(error) = value.setattr("max_bytes", max_bytes) {
+        return error;
+    }
+    if let Err(error) = value.setattr("observed_bytes", observed_bytes) {
+        return error;
+    }
+    exception
 }
 
 fn remote_error(py: Python<'_>, error: core::RemoteProtocolError) -> PyErr {
@@ -977,7 +1431,11 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyData>()?;
     module.add_class::<PyEndOfMessage>()?;
     module.add_class::<PyConnectionClosed>()?;
+    module.add_class::<PyCollectedBody>()?;
+    module.add_class::<PyBodyCollector>()?;
+    module.add_class::<PyReceiveBuffer>()?;
     module.add_class::<PyConnection>()?;
+    module.add("BodyTooLarge", module.py().get_type::<BodyTooLarge>())?;
     module.add("ProtocolError", module.py().get_type::<ProtocolError>())?;
     module.add(
         "LocalProtocolError",

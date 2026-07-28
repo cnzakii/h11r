@@ -1,4 +1,4 @@
-"""Move HTTP bodies while avoiding copies at the h11r boundary.
+"""Pass a file region through unchanged and reuse a transport receive buffer.
 
 Sending: ``send_data()`` returns one convenient ``bytes`` object containing
 framing and body data. ``send_data_parts(proxy)`` instead reads the proxy's
@@ -6,9 +6,9 @@ declared byte size and returns framing around the identical object so the
 transport can write the three pieces in order and use ``socket.sendfile()`` for
 the body.
 
-Receiving: ``socket.recv()`` allocates a fresh ``bytes`` object per read.
-``socket.recv_into()`` fills one reused buffer instead, and ``receive_data()``
-accepts a ``memoryview`` of the filled part directly.
+Receiving: ``Connection.receive_buffer()`` leases reusable connection-owned
+storage that ``socket.recv_into()`` fills directly. Committing the initialized
+prefix makes those bytes available to the parser.
 
 Actual kernel zero-copy depends on the transport and operating system. h11r is
 Sans-I/O: it never opens the file, owns its descriptor, or calls ``sendfile()``.
@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 import h11r
+
+MAX_BODY_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -45,39 +47,45 @@ def send_file_region(transport: socket.socket, region: FileRegion) -> None:
         remaining -= sent
 
 
-def next_event(
-    connection: h11r.Connection, transport: socket.socket, buffer: memoryview
-) -> object:
+def receive_into_connection(
+    connection: h11r.Connection, transport: socket.socket
+) -> None:
+    """Read once into a reusable connection-owned receive lease."""
+    with connection.receive_buffer(64 * 1024) as receive_buffer:
+        received = transport.recv_into(receive_buffer)
+        receive_buffer.commit(received)
+
+
+def next_event(connection: h11r.Connection, transport: socket.socket) -> object:
     while True:
         event = connection.next_event()
         if event is h11r.ReceiveStatus.NEED_DATA:
-            # An empty slice after recv_into() returns 0 marks EOF, exactly
-            # like the empty bytes recv() returns on a closed transport.
-            received = transport.recv_into(buffer)
-            connection.receive_data(buffer[:received])
+            # Committing zero bytes marks EOF, exactly like passing the empty
+            # bytes returned by recv() on a closed transport.
+            receive_into_connection(connection, transport)
             continue
         return event
 
 
-def receive_body(
-    connection: h11r.Connection, transport: socket.socket, buffer: memoryview
-) -> bytes:
-    """Consume one request and return all of its body fragments."""
-    body = bytearray()
-    request_received = False
+def receive_body(connection: h11r.Connection, transport: socket.socket) -> memoryview:
+    """Expose one request head, then collect its complete body."""
 
     while True:
-        event = next_event(connection, transport, buffer)
+        event = next_event(connection, transport)
 
         if isinstance(event, h11r.Request):
-            request_received = True
             print(f"server received {event.method.decode()} {event.target.decode()}")
-        elif isinstance(event, h11r.Data):
-            body.extend(event.data)
-        elif isinstance(event, h11r.EndOfMessage):
-            if not request_received:
-                raise RuntimeError("request ended before its Request event")
-            return bytes(body)
+            if connection.client_is_waiting_for_100_continue:
+                transport.sendall(connection.send_informational_response(100))
+            collector = connection.collect_body(max_bytes=MAX_BODY_BYTES)
+            while True:
+                body = collector.next()
+                if body is h11r.ReceiveStatus.NEED_DATA:
+                    receive_into_connection(connection, transport)
+                    continue
+                if isinstance(body, h11r.CollectedBody):
+                    return body.data
+                raise RuntimeError(f"unexpected collector result: {body!r}")
         elif isinstance(event, h11r.ConnectionClosed):
             raise ConnectionError("client closed before finishing the upload")
         elif event is h11r.ReceiveStatus.PAUSED:
@@ -86,14 +94,12 @@ def receive_body(
             raise RuntimeError(f"unexpected upload event: {event!r}")
 
 
-def receive_response(
-    connection: h11r.Connection, transport: socket.socket, buffer: memoryview
-) -> None:
+def receive_response(connection: h11r.Connection, transport: socket.socket) -> None:
     """Consume the final response so the HTTP exchange is actually complete."""
     response_received = False
 
     while True:
-        event = next_event(connection, transport, buffer)
+        event = next_event(connection, transport)
 
         if isinstance(event, h11r.InformationalResponse):
             print(f"client received informational response {event.status_code}")
@@ -120,9 +126,6 @@ def main() -> None:
     server_socket.settimeout(2)
     client = h11r.Connection(h11r.Role.CLIENT)
     server = h11r.Connection(h11r.Role.SERVER)
-    # One reused receive buffer replaces a fresh bytes allocation per read.
-    receive_buffer = memoryview(bytearray(64 * 1024))
-
     try:
         # Chunked encoding makes the framing bytes visible: h11r will produce a
         # hexadecimal chunk length before the body and CRLF after it.
@@ -153,7 +156,7 @@ def main() -> None:
             client_socket.sendall(suffix)
             client_socket.sendall(client.end_of_message())
 
-            received_body = receive_body(server, server_socket, receive_buffer)
+            received_body = receive_body(server, server_socket)
             assert received_body == body
             print(f"server received {len(received_body)} exact file-region bytes")
             print(f"h11r added chunk framing {prefix!r} ... {suffix!r}")
@@ -162,7 +165,7 @@ def main() -> None:
         # upload would leave the client unaware of whether the server accepted it.
         server_socket.sendall(server.send_response(204, reason="No Content"))
         server_socket.sendall(server.end_of_message())
-        receive_response(client, client_socket, receive_buffer)
+        receive_response(client, client_socket)
 
         client.start_next_cycle()
         server.start_next_cycle()

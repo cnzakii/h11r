@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from types import TracebackType
 from typing import ClassVar, Protocol, TypeAlias, TypeVar, final
 
 __version__: str
@@ -39,6 +40,10 @@ class LocalProtocolError(ProtocolError): ...
 
 class RemoteProtocolError(ProtocolError):
     suggested_status_code: int | None
+
+class BodyTooLarge(Exception):
+    max_bytes: int
+    observed_bytes: int
 
 @final
 class Request:
@@ -92,6 +97,34 @@ class EndOfMessage:
 class ConnectionClosed:
     def __init__(self) -> None: ...
 
+@final
+class CollectedBody:
+    @property
+    def data(self) -> memoryview: ...
+    @property
+    def trailers(self) -> _Headers: ...
+
+@final
+class BodyCollector:
+    def next(self) -> CollectedBody | ReceiveStatus: ...
+    def abort(self) -> None: ...
+
+@final
+class ReceiveBuffer:
+    def acquire(self) -> ReceiveBuffer: ...
+    def commit(self, nbytes: int) -> None: ...
+    def abort(self) -> None: ...
+    def __buffer__(self, flags: int, /) -> memoryview: ...
+    def __release_buffer__(self, buffer: memoryview, /) -> None: ...
+    def __enter__(self) -> ReceiveBuffer: ...
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+    def __len__(self) -> int: ...
+
 _Event: TypeAlias = (
     Request | InformationalResponse | Response | Data | EndOfMessage | ConnectionClosed
 )
@@ -106,7 +139,9 @@ class Connection:
         max_header_count: int = 100,
     ) -> Connection: ...
     def receive_data(self, data: _Buffer) -> None: ...
+    def receive_buffer(self, size: int) -> ReceiveBuffer: ...
     def next_event(self) -> _Event | ReceiveStatus: ...
+    def collect_body(self, *, max_bytes: int) -> BodyCollector: ...
     def send_request(
         self,
         method: _Buffer | str,
@@ -148,6 +183,9 @@ class Connection:
     def trailing_data(self) -> tuple[bytes, bool]: ...
 
 __all__ = [
+    "BodyCollector",
+    "BodyTooLarge",
+    "CollectedBody",
     "Connection",
     "ConnectionClosed",
     "Data",
@@ -155,6 +193,7 @@ __all__ = [
     "InformationalResponse",
     "LocalProtocolError",
     "ProtocolError",
+    "ReceiveBuffer",
     "ReceiveStatus",
     "RemoteProtocolError",
     "Request",

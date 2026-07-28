@@ -60,6 +60,86 @@ owns connection reuse or protocol handoff; do not turn it into another read.
 An asynchronous adapter uses the same protocol loop and awaits only where this
 example calls `read()`.
 
+## Receive into recycled storage
+
+Keep `receive_data()` as the direct path when a transport already returns
+`bytes`. When a transport can fill caller-owned storage, `receive_buffer()`
+avoids both that fresh Python `bytes` allocation and the safety copy required
+for an arbitrary mutable exporter:
+
+```python
+import socket
+
+import h11r
+
+
+def receive_into(connection: h11r.Connection, transport: socket.socket) -> None:
+    with connection.receive_buffer(64 * 1024) as receive_buffer:
+        received = transport.recv_into(receive_buffer)
+        receive_buffer.commit(received)
+```
+
+Creating the lease reserves the connection. Entering the context calls
+`acquire()` and enables writable buffer exports. `commit(received)` passes the
+initialized prefix to the protocol engine and returns the storage for reuse;
+`commit(0)` records the same transport EOF as `receive_data(b"")`. If the read
+raises or the block exits before commit, context cleanup calls `abort()`.
+
+Do not retain a `memoryview` or another export after the transport operation.
+`commit()` raises `BufferError` while an export remains. An abort with an
+escaped export stays pending and keeps the connection reserved until the final
+export is released. While reserved, state-changing connection methods raise
+`RuntimeError`; state properties remain readable.
+
+### Map `asyncio.BufferedProtocol` callbacks
+
+An asyncio buffered protocol keeps the lease returned from `get_buffer()` and
+commits it in `buffer_updated()`:
+
+```python
+import asyncio
+
+import h11r
+
+
+class Protocol(asyncio.BufferedProtocol):
+    def __init__(self) -> None:
+        self.connection = h11r.Connection(h11r.Role.SERVER)
+        self.pending: h11r.ReceiveBuffer | None = None
+
+    def get_buffer(self, sizehint: int) -> h11r.ReceiveBuffer:
+        if self.pending is None:
+            size = sizehint if sizehint > 0 else 64 * 1024
+            self.pending = self.connection.receive_buffer(size).acquire()
+        return self.pending
+
+    def buffer_updated(self, nbytes: int) -> None:
+        if self.pending is None:
+            raise RuntimeError("buffer_updated without get_buffer")
+        receive_buffer = self.pending
+        self.pending = None
+        receive_buffer.commit(nbytes)
+        self.drain_http_events()
+
+    def eof_received(self) -> None:
+        if self.pending is None:
+            self.pending = self.connection.receive_buffer(1).acquire()
+        receive_buffer = self.pending
+        self.pending = None
+        receive_buffer.commit(0)
+        self.drain_http_events()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if self.pending is not None:
+            self.pending.abort()
+            self.pending = None
+```
+
+Here, `drain_http_events()` is the adapter's event loop, not an h11r method.
+`connection_lost()` aborts an abandoned lease because asyncio may close a
+transport without calling `buffer_updated()` or `eof_received()` for the
+pending buffer.
+
 ## Dispatch one complete message
 
 Keep the message head separate from body fragments and finish only at
@@ -89,6 +169,35 @@ while True:
 The two `process_*` calls are the application callbacks named in the table
 above; they are not functions provided by `h11r`.
 
+### Opt into bounded full-body collection
+
+When an application requires one contiguous body, expose the request head
+first, handle `100 Continue` if needed, then create a collector:
+
+```python
+request = next_event(connection, read)
+if not isinstance(request, h11r.Request):
+    raise RuntimeError("expected a request head")
+
+if connection.client_is_waiting_for_100_continue:
+    write_all(connection.send_informational_response(100))
+
+collector = connection.collect_body(max_bytes=1024 * 1024)
+while True:
+    body = collector.next()
+    if body is h11r.ReceiveStatus.NEED_DATA:
+        connection.receive_data(read())
+        continue
+    if not isinstance(body, h11r.CollectedBody):
+        raise RuntimeError("unexpected collector result")
+    break
+```
+
+This is opt-in: ordinary `next_event()` continues to expose streaming `Data`
+and `EndOfMessage` events. While collection is active, feed input with either
+`receive_data()` or `receive_buffer()`, and poll the collector rather than
+`next_event()`.
+
 ## Write to the transport
 
 Every sending method returns bytes for the transport. The `write_all()`
@@ -117,6 +226,7 @@ connection between these ordered operations.
 | --- | --- |
 | Follow a client/server exchange over a local stream | [`round_trip.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/round_trip.py) |
 | Build a teaching server with `asyncio` streams | [`asyncio_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_server.py) |
+| Use `recv_into()` with recycled storage | [`zero_copy_body.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/zero_copy_body.py) |
 
 Run any example from a repository checkout by replacing the filename in this
 command:
@@ -131,7 +241,8 @@ Before treating an adapter as complete, confirm that it:
 
 - creates one connection per transport endpoint;
 - drains buffered events before another read;
-- passes `b""` to `receive_data()` at EOF;
+- passes EOF with `receive_data(b"")` or `ReceiveBuffer.commit(0)`, and aborts
+  abandoned leases;
 - handles every event and receive status possible for its role;
 - writes all send results in order;
 - applies application body, timeout, and concurrency limits;

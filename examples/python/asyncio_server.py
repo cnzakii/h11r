@@ -30,10 +30,6 @@ READ_TIMEOUT = 30.0
 MAX_REQUEST_BODY = 1024 * 1024
 
 
-class RequestTooLarge(Exception):
-    """The application body limit was exceeded."""
-
-
 class AsyncHTTPConnection:
     """Join one h11r state machine to one asyncio byte stream."""
 
@@ -73,17 +69,12 @@ class AsyncHTTPConnection:
         # crosses its high-water mark, providing back-pressure to this task.
         await self.writer.drain()
 
-    async def read_request(self) -> tuple[h11r.Request, bytes] | None:
+    async def read_request(self) -> tuple[h11r.Request, memoryview] | None:
         """Read one request, returning None when the peer closes while idle."""
-        request: h11r.Request | None = None
-        body = bytearray()
-
         while True:
             event = await self.next_event()
 
             if isinstance(event, h11r.Request):
-                request = event
-
                 # A client using Expect: 100-continue may wait before sending
                 # its body. Acknowledging here prevents both peers deadlocking.
                 if self.protocol.client_is_waiting_for_100_continue:
@@ -93,18 +84,21 @@ class AsyncHTTPConnection:
                             reason="Continue",
                         )
                     )
-            elif isinstance(event, h11r.Data):
-                if len(body) + len(event.data) > MAX_REQUEST_BODY:
-                    raise RequestTooLarge
-                body.extend(event.data)
-            elif isinstance(event, h11r.EndOfMessage):
-                if request is None:
-                    raise RuntimeError("request ended before its Request event")
-                return request, bytes(body)
+                collector = self.protocol.collect_body(max_bytes=MAX_REQUEST_BODY)
+                while True:
+                    body = collector.next()
+                    if body is h11r.ReceiveStatus.NEED_DATA:
+                        data = await asyncio.wait_for(
+                            self.reader.read(READ_SIZE),
+                            timeout=READ_TIMEOUT,
+                        )
+                        self.protocol.receive_data(data)
+                        continue
+                    if isinstance(body, h11r.CollectedBody):
+                        return event, body.data
+                    raise RuntimeError(f"unexpected collector result: {body!r}")
             elif isinstance(event, h11r.ConnectionClosed):
-                if request is None:
-                    return None
-                raise ConnectionError("peer closed before finishing the request")
+                return None
             elif event is h11r.ReceiveStatus.PAUSED:
                 # PAUSED is not a request for more network data. It means the
                 # current response must finish before a buffered pipelined
@@ -116,7 +110,7 @@ class AsyncHTTPConnection:
     async def send_response(
         self,
         status_code: int,
-        body: bytes,
+        body: bytes | memoryview,
         *,
         allow: str | None = None,
         close: bool = False,
@@ -163,7 +157,9 @@ class AsyncHTTPConnection:
             await self.writer.wait_closed()
 
 
-def route(request: h11r.Request, body: bytes) -> tuple[int, bytes, str | None]:
+def route(
+    request: h11r.Request, body: bytes | memoryview
+) -> tuple[int, bytes | memoryview, str | None]:
     """Apply the tiny example application's routing policy."""
     if request.method in {b"GET", b"HEAD"} and request.target == b"/":
         return HTTPStatus.OK, b"h11r asyncio example\nPOST a body to /echo\n", None
@@ -189,7 +185,7 @@ async def handle_connection(
         while True:
             try:
                 incoming = await connection.read_request()
-            except RequestTooLarge:
+            except h11r.BodyTooLarge:
                 # Stop reading an oversized body, send a final response, and
                 # close. Reusing the connection would require draining it first.
                 await connection.send_response(

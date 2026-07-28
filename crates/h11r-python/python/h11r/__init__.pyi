@@ -1,4 +1,13 @@
 from ._core import (
+    BodyCollector as BodyCollector,
+)
+from ._core import (
+    BodyTooLarge as BodyTooLarge,
+)
+from ._core import (
+    CollectedBody as CollectedBody,
+)
+from ._core import (
     Connection as Connection,
 )
 from ._core import (
@@ -18,6 +27,9 @@ from ._core import (
 )
 from ._core import (
     ProtocolError as ProtocolError,
+)
+from ._core import (
+    ReceiveBuffer as ReceiveBuffer,
 )
 from ._core import (
     ReceiveStatus as ReceiveStatus,
@@ -42,6 +54,9 @@ from ._core import (
 )
 
 __all__ = [
+    "BodyCollector",
+    "BodyTooLarge",
+    "CollectedBody",
     "Connection",
     "ConnectionClosed",
     "Data",
@@ -49,6 +64,7 @@ __all__ = [
     "InformationalResponse",
     "LocalProtocolError",
     "ProtocolError",
+    "ReceiveBuffer",
     "ReceiveStatus",
     "RemoteProtocolError",
     "Request",

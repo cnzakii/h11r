@@ -4,19 +4,23 @@ description: Public Python API reference for h11r.
 
 # Python API
 
-The Python package exposes one connection type, immutable protocol events,
-actor roles and states, receive statuses, and protocol errors.
+The Python package exposes one connection type, immutable protocol events and
+collected bodies, actor roles and states, receive statuses, and protocol
+errors.
 
 API methods operate on protocol state only. Methods that send HTTP return bytes
 for the caller to write; `receive_data()` accepts bytes already read by the
-caller.
+caller, while `receive_buffer()` optionally lends writable storage to a
+compatible transport.
 
 ::: h11r.Connection
     options:
       group_by_category: false
       members:
         - receive_data
+        - receive_buffer
         - next_event
+        - collect_body
         - send_request
         - send_informational_response
         - send_response
@@ -26,9 +30,33 @@ caller.
         - start_next_cycle
         - close
 
+## Receive buffers
+
+::: h11r.ReceiveBuffer
+    options:
+      heading_level: 3
+      group_by_category: false
+
+## Full-body collection
+
+::: h11r.BodyCollector
+    options:
+      heading_level: 3
+      group_by_category: false
+
+::: h11r.CollectedBody
+    options:
+      heading_level: 3
+      members: false
+
 ## Roles and states
 
 ::: h11r.Role
+    options:
+      heading_level: 3
+      members: false
+
+::: h11r.BodyTooLarge
     options:
       heading_level: 3
       members: false

@@ -12,6 +12,7 @@ has the matching need.
 | Need | h11r feature |
 | --- | --- |
 | Process a body without collecting it | `Data` events and incremental `send_data()` calls |
+| Collect one bounded body contiguously | `collect_body(max_bytes=...)` |
 | Pass a transport-owned body object through `h11r` | `send_data_parts()` |
 | Accept queued requests without reordering responses | `PAUSED` and `start_next_cycle()` |
 | Continue with WebSocket, CONNECT, or another selected protocol | `trailing_data` |
@@ -44,6 +45,37 @@ uv run python examples/python/streaming_body.py
 Success ends with `streamed 36 bytes without collecting the body`.
 
 [Read `streaming_body.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/streaming_body.py)
+
+## Collect one bounded body
+
+After `next_event()` returns a `Request` or final `Response`, opt into
+contiguous collection before polling another event:
+
+```python
+collector = connection.collect_body(max_bytes=1024 * 1024)
+
+while True:
+    result = collector.next()
+    if result is h11r.ReceiveStatus.NEED_DATA:
+        connection.receive_data(read())
+        continue
+    body = result
+    break
+
+process(body.data, body.trailers)
+```
+
+The collector consumes `Data` events internally and moves trailers from
+`EndOfMessage` into `CollectedBody.trailers`. `body.data` is a read-only,
+byte-sized, C-contiguous `memoryview` over private storage. It remains valid
+independently of the connection; call `bytes(body.data)` only when the
+application needs a Python `bytes` copy.
+
+`max_bytes` is required. Exceeding it raises `BodyTooLarge` with `max_bytes`
+and `observed_bytes` attributes. Stop receiving and send an error response or
+close the connection after a late abort or collection failure. Applications
+that can process incrementally should keep using `Data` events so memory use
+does not scale with the complete body.
 
 ## Pass through a transport-owned body
 

@@ -118,15 +118,17 @@ client-side flow and makes that boundary visible before adding a socket.
 - Read the [protocol model][protocol-model] before connecting `h11r` to your own
   [transport adapter][integration-guide].
 - Use [advanced patterns][advanced-guide] only when you need streaming,
-  buffer-preserving writes, pipelining, or protocol handoff.
+  bounded full-body collection, buffer-preserving writes, pipelining, or
+  protocol handoff.
 
 Use the runnable examples when you need a specific integration:
 
 | Goal | Example |
 | --- | --- |
 | Process a body incrementally and validate trailers | [`streaming_body.py`][streaming-example] |
+| Collect a bounded body after exposing its request head | [`asyncio_server.py`][asyncio-example] |
 | Preserve response order for pipelined requests | [`pipelining.py`][pipelining-example] |
-| Pass a transport-owned file region through to `sendfile()` | [`zero_copy_body.py`][zero-copy-example] |
+| Use `sendfile()` and a reusable receive lease | [`zero_copy_body.py`][zero-copy-example] |
 | Hand a successful WebSocket Upgrade to `wsproto` | [`websocket_upgrade.py`][upgrade-example] |
 | Build a complete teaching server with `asyncio` streams | [`asyncio_server.py`][asyncio-example] |
 

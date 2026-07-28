@@ -34,8 +34,8 @@ your application keeps control of networking, concurrency, and policy.
 - **Your I/O stays yours.** Use synchronous sockets, `asyncio`, Trio, test
   streams, or another byte transport without changing the protocol code.
 - **Control when you need it.** Start with ordinary request and response bytes,
-  then opt into streaming, buffer-preserving writes, pipelining, or protocol
-  handoff.
+  then opt into recycled receives, streaming, buffer-preserving writes,
+  pipelining, or protocol handoff.
 
 !!! warning "Alpha software"
 
@@ -76,7 +76,8 @@ back to `h11r`, which turns them into response events.
 - [**Understand the model**](concepts.md) — learn the event flow, connection
   cycles, receive statuses, and error boundaries.
 - [**Connect your transport**](integration.md) — join a `Connection` to a
-  synchronous or asynchronous byte stream.
+  synchronous or asynchronous byte stream, including optional recycled
+  receive buffers.
 
 ## How h11r fits
 

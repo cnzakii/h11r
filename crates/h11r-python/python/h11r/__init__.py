@@ -1,6 +1,9 @@
 """Sans-I/O HTTP/1.1 library."""
 
 from ._core import (
+    BodyCollector,
+    BodyTooLarge,
+    CollectedBody,
     Connection,
     ConnectionClosed,
     Data,
@@ -8,6 +11,7 @@ from ._core import (
     InformationalResponse,
     LocalProtocolError,
     ProtocolError,
+    ReceiveBuffer,
     ReceiveStatus,
     RemoteProtocolError,
     Request,
@@ -18,6 +22,9 @@ from ._core import (
 )
 
 __all__ = [
+    "BodyCollector",
+    "BodyTooLarge",
+    "CollectedBody",
     "Connection",
     "ConnectionClosed",
     "Data",
@@ -25,6 +32,7 @@ __all__ = [
     "InformationalResponse",
     "LocalProtocolError",
     "ProtocolError",
+    "ReceiveBuffer",
     "ReceiveStatus",
     "RemoteProtocolError",
     "Request",

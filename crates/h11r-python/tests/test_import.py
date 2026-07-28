@@ -6,6 +6,9 @@ import h11r._core
 
 def test_public_import_surface() -> None:
     assert h11r.__all__ == [
+        "BodyCollector",
+        "BodyTooLarge",
+        "CollectedBody",
         "Connection",
         "ConnectionClosed",
         "Data",
@@ -13,6 +16,7 @@ def test_public_import_surface() -> None:
         "InformationalResponse",
         "LocalProtocolError",
         "ProtocolError",
+        "ReceiveBuffer",
         "ReceiveStatus",
         "RemoteProtocolError",
         "Request",

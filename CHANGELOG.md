@@ -16,6 +16,15 @@ User-visible changes to h11r are recorded here.
   `Connection.send_data_parts(body)`. A proxy declares its exact byte length
   with `nbytes`, and h11r returns the identical object for the transport to
   write.
+- Add the optional `Connection.receive_buffer(size)` path for transports that
+  support `recv_into()` or `asyncio.BufferedProtocol`. Its non-constructible
+  `ReceiveBuffer` lease recycles per-connection scratch storage, commits
+  initialized bytes directly to the Rust connection, records EOF with
+  `commit(0)`, and aborts unfinished reads safely.
+- Add opt-in Python `Connection.collect_body(max_bytes=...)` support. Its
+  `BodyCollector` consumes streaming data internally and returns one
+  `CollectedBody` with a read-only contiguous `memoryview` and trailers, while
+  `BodyTooLarge` enforces the required application limit.
 
 ### Changed
 
