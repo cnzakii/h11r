@@ -64,9 +64,10 @@ it so the connection reservation is released. Do not retain a `memoryview` or
 other buffer export across `commit()`.
 
 The synchronous teaching adapter applies this pattern to `socket.recv_into()`;
-the buffered asyncio adapter maps lease acquisition, commit, EOF, and abort to
-the corresponding `asyncio.BufferedProtocol` callbacks. Both collect one
-bounded request body, answer once, and close.
+the buffered asyncio adapter returns a writable `memoryview` from
+`get_buffer()` and releases it before mapping commit, EOF, and abort to the
+remaining `asyncio.BufferedProtocol` callbacks. Both collect one bounded
+request body, answer once, and close.
 
 [Read `receive_buffer_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/receive_buffer_server.py) ·
 [Read `asyncio_buffered_server.py` ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/examples/python/asyncio_buffered_server.py)

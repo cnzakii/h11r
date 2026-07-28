@@ -5,8 +5,9 @@ Run it from the repository root, then make a request from another terminal::
     uv run python examples/python/asyncio_buffered_server.py
     curl -v http://127.0.0.1:8080/
 
-``get_buffer()`` acquires a receive lease, ``buffer_updated()`` commits it,
-EOF commits zero bytes, and connection loss aborts an abandoned lease.
+``get_buffer()`` acquires a receive lease and returns a writable
+``memoryview``. ``buffer_updated()`` releases that view before commit, EOF
+commits zero bytes, and connection loss releases and aborts an abandoned lease.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ class BufferedHTTPProtocol(asyncio.BufferedProtocol):
         self.connection = h11r.Connection(h11r.Role.SERVER)
         self.transport: asyncio.Transport | None = None
         self.pending: h11r.ReceiveBuffer | None = None
+        self.pending_view: memoryview | None = None
         self.request: h11r.Request | None = None
         self.collector: h11r.BodyCollector | None = None
         self.responded = False
@@ -41,16 +43,21 @@ class BufferedHTTPProtocol(asyncio.BufferedProtocol):
             raise TypeError("BufferedHTTPProtocol requires a byte transport")
         self.transport = transport
 
-    def get_buffer(self, sizehint: int) -> h11r.ReceiveBuffer:
+    def get_buffer(self, sizehint: int) -> memoryview:
         if self.pending is None:
             size = sizehint if sizehint > 0 else READ_SIZE
             self.pending = self.connection.receive_buffer(size).acquire()
-        return self.pending
+            self.pending_view = memoryview(self.pending)
+        if self.pending_view is None:
+            raise RuntimeError("active receive lease has no writable view")
+        return self.pending_view
 
     def buffer_updated(self, nbytes: int) -> None:
-        if self.pending is None:
+        if self.pending is None or self.pending_view is None:
             raise RuntimeError("buffer_updated() called without get_buffer()")
         receive_buffer = self.pending
+        self.pending_view.release()
+        self.pending_view = None
         self.pending = None
         receive_buffer.commit(nbytes)
         self._drain_events()
@@ -58,12 +65,20 @@ class BufferedHTTPProtocol(asyncio.BufferedProtocol):
     def eof_received(self) -> None:
         if self.pending is None:
             self.pending = self.connection.receive_buffer(1).acquire()
+        elif self.pending_view is None:
+            raise RuntimeError("active receive lease has no writable view")
+        if self.pending_view is not None:
+            self.pending_view.release()
+            self.pending_view = None
         receive_buffer = self.pending
         self.pending = None
         receive_buffer.commit(0)
         self._drain_events()
 
     def connection_lost(self, exc: Exception | None) -> None:
+        if self.pending_view is not None:
+            self.pending_view.release()
+            self.pending_view = None
         if self.pending is not None:
             self.pending.abort()
             self.pending = None

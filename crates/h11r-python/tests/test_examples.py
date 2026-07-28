@@ -268,7 +268,7 @@ def test_asyncio_buffered_server_uses_callbacks_and_cleans_up() -> None:
                 self.eof_calls = 0
                 self.lost_calls = 0
 
-            def get_buffer(self, sizehint: int) -> h11r.ReceiveBuffer:
+            def get_buffer(self, sizehint: int) -> memoryview:
                 self.get_buffer_calls += 1
                 return super().get_buffer(sizehint)
 
@@ -288,6 +288,14 @@ def test_asyncio_buffered_server_uses_callbacks_and_cleans_up() -> None:
             protocol = ObservedProtocol()
             protocols.append(protocol)
             return protocol
+
+        probe = ObservedProtocol()
+        writable = probe.get_buffer(4)
+        writable[:] = b"GET "
+        assert bytes(writable) == b"GET "
+        probe.connection_lost(None)
+        assert probe.pending is None
+        assert probe.pending_view is None
 
         server = await loop.create_server(protocol_factory, "127.0.0.1", 0)
         if not server.sockets:
@@ -322,6 +330,7 @@ def test_asyncio_buffered_server_uses_callbacks_and_cleans_up() -> None:
                 assert protocol.get_buffer_calls > 0
                 assert protocol.lost_calls == 1
                 assert protocol.pending is None
+                assert protocol.pending_view is None
                 assert protocol.transport is None
             for protocol in protocols[:2]:
                 assert protocol.buffer_updated_calls > 0

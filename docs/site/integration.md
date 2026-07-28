@@ -93,8 +93,11 @@ export is released. While reserved, state-changing connection methods raise
 
 ### Map `asyncio.BufferedProtocol` callbacks
 
-An asyncio buffered protocol keeps the lease returned from `get_buffer()` and
-commits it in `buffer_updated()`:
+An asyncio buffered protocol acquires a receive lease in `get_buffer()` and
+returns a writable `memoryview`. Returning the view works both with transports
+that fill the buffer protocol directly and with Windows' Proactor transport,
+which assigns into the returned object. Release the view before committing the
+lease in `buffer_updated()`:
 
 ```python
 import asyncio
@@ -106,17 +109,23 @@ class Protocol(asyncio.BufferedProtocol):
     def __init__(self) -> None:
         self.connection = h11r.Connection(h11r.Role.SERVER)
         self.pending: h11r.ReceiveBuffer | None = None
+        self.pending_view: memoryview | None = None
 
-    def get_buffer(self, sizehint: int) -> h11r.ReceiveBuffer:
+    def get_buffer(self, sizehint: int) -> memoryview:
         if self.pending is None:
             size = sizehint if sizehint > 0 else 64 * 1024
             self.pending = self.connection.receive_buffer(size).acquire()
-        return self.pending
+            self.pending_view = memoryview(self.pending)
+        if self.pending_view is None:
+            raise RuntimeError("active receive lease has no writable view")
+        return self.pending_view
 
     def buffer_updated(self, nbytes: int) -> None:
-        if self.pending is None:
+        if self.pending is None or self.pending_view is None:
             raise RuntimeError("buffer_updated without get_buffer")
         receive_buffer = self.pending
+        self.pending_view.release()
+        self.pending_view = None
         self.pending = None
         receive_buffer.commit(nbytes)
         self.drain_http_events()
@@ -124,21 +133,29 @@ class Protocol(asyncio.BufferedProtocol):
     def eof_received(self) -> None:
         if self.pending is None:
             self.pending = self.connection.receive_buffer(1).acquire()
+        elif self.pending_view is None:
+            raise RuntimeError("active receive lease has no writable view")
+        if self.pending_view is not None:
+            self.pending_view.release()
+            self.pending_view = None
         receive_buffer = self.pending
         self.pending = None
         receive_buffer.commit(0)
         self.drain_http_events()
 
     def connection_lost(self, exc: Exception | None) -> None:
+        if self.pending_view is not None:
+            self.pending_view.release()
+            self.pending_view = None
         if self.pending is not None:
             self.pending.abort()
             self.pending = None
 ```
 
 Here, `drain_http_events()` is the adapter's event loop, not an h11r method.
-`connection_lost()` aborts an abandoned lease because asyncio may close a
-transport without calling `buffer_updated()` or `eof_received()` for the
-pending buffer.
+`connection_lost()` releases the view and aborts an abandoned lease because
+asyncio may close a transport without calling `buffer_updated()` or
+`eof_received()` for the pending buffer.
 
 ## Dispatch one complete message
 
