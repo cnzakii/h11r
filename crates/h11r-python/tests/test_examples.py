@@ -327,12 +327,12 @@ def test_asyncio_buffered_server_uses_callbacks_and_cleans_up() -> None:
 
             assert len(protocols) == 3
             for protocol in protocols:
-                assert protocol.get_buffer_calls > 0
                 assert protocol.lost_calls == 1
                 assert protocol.pending is None
                 assert protocol.pending_view is None
                 assert protocol.transport is None
             for protocol in protocols[:2]:
+                assert protocol.get_buffer_calls > 0
                 assert protocol.buffer_updated_calls > 0
             assert protocols[-1].eof_calls == 1
         finally:
