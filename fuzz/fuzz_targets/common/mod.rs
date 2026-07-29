@@ -84,24 +84,37 @@ pub(crate) enum Terminal {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Outcome {
     pub(crate) terminal: Terminal,
-    pub(crate) events: Vec<Event>,
+    pub(crate) events: Vec<Event<'static>>,
     pub(crate) body: Vec<u8>,
     pub(crate) states: (State, State),
     pub(crate) trailing: Vec<u8>,
 }
 
+/// Rebuilds a drained event without the input-buffer borrow. Body bytes are
+/// collected separately, so `Event::Data` never reaches storage.
+pub(crate) fn detach(event: Event<'_>) -> Event<'static> {
+    match event {
+        Event::Request(head) => Event::Request(head),
+        Event::InformationalResponse(head) => Event::InformationalResponse(head),
+        Event::Response(head) => Event::Response(head),
+        Event::EndOfMessage(end) => Event::EndOfMessage(end),
+        Event::ConnectionClosed => Event::ConnectionClosed,
+        Event::Data(_) => unreachable!("data events are drained into the body"),
+    }
+}
+
 pub(crate) fn poll(
     connection: &mut Connection,
-    events: &mut Vec<Event>,
+    events: &mut Vec<Event<'static>>,
     body: &mut Vec<u8>,
     budget: usize,
 ) -> Terminal {
     for _ in 0..budget {
         match connection.next_event() {
-            Ok(NextEvent::Event(Event::Data(data))) => body.extend_from_slice(&data.data),
+            Ok(NextEvent::Event(Event::Data(data))) => body.extend_from_slice(data.data),
             Ok(NextEvent::Event(event)) => {
                 let closed = matches!(event, Event::ConnectionClosed);
-                events.push(event);
+                events.push(detach(event));
                 if closed {
                     return Terminal::Complete;
                 }
@@ -119,7 +132,7 @@ pub(crate) fn poll(
 
 pub(crate) fn finish(
     connection: &mut Connection,
-    events: Vec<Event>,
+    events: Vec<Event<'static>>,
     body: Vec<u8>,
     terminal: Terminal,
 ) -> Outcome {
@@ -133,7 +146,7 @@ pub(crate) fn finish(
     }
 }
 
-pub(crate) fn assert_message(events: &[Event], expected_body: &[u8]) {
+pub(crate) fn assert_message(events: &[Event<'_>], body: &[u8], expected_body: &[u8]) {
     assert!(matches!(
         events.first(),
         Some(Event::Request(_) | Event::Response(_))
@@ -142,14 +155,5 @@ pub(crate) fn assert_message(events: &[Event], expected_body: &[u8]) {
         events.last(),
         Some(Event::EndOfMessage(EndOfMessage { .. }))
     ));
-    let body: Vec<u8> = events
-        .iter()
-        .filter_map(|event| match event {
-            Event::Data(data) => Some(data.data.as_slice()),
-            _ => None,
-        })
-        .flatten()
-        .copied()
-        .collect();
     assert_eq!(body, expected_body);
 }

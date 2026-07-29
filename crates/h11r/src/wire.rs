@@ -41,6 +41,14 @@ impl Buffer {
         &self.bytes[self.start..]
     }
     pub(crate) fn extend(&mut self, data: &[u8]) {
+        self.compact();
+        self.bytes.extend_from_slice(data);
+    }
+    pub(crate) fn extend_iter(&mut self, data: impl IntoIterator<Item = u8>) {
+        self.compact();
+        self.bytes.extend(data);
+    }
+    fn compact(&mut self) {
         // Moving no more live bytes than were discarded keeps compaction
         // amortized linear across adversarial receive boundaries.
         let live = self.bytes.len() - self.start;
@@ -49,15 +57,14 @@ impl Buffer {
             self.bytes.truncate(live);
             self.start = 0;
         }
-        self.bytes.extend_from_slice(data);
     }
     pub(crate) fn consume(&mut self, count: usize) {
         self.start += count;
     }
-    pub(crate) fn take(&mut self, count: usize) -> Vec<u8> {
-        let value = self.as_slice()[..count].to_vec();
+    pub(crate) fn take(&mut self, count: usize) -> &[u8] {
+        let start = self.start;
         self.consume(count);
-        value
+        &self.bytes[start..start + count]
     }
 }
 

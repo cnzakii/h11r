@@ -89,6 +89,60 @@ def test_python_text_and_buffer_inputs_preserve_http_octets() -> None:
         invalid_pair.send_request("GET", "/", [["Host", "example.test"]])
 
 
+def test_receive_data_accepts_reused_receive_buffer() -> None:
+    # The socket.recv_into() pattern reads into one reused bytearray and hands
+    # the filled prefix over as a memoryview, without a bytes object per read.
+    request = b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    buffer = bytearray(16)
+    connection = h11r.Connection(h11r.Role.SERVER)
+    for start in range(0, len(request), len(buffer)):
+        chunk = request[start : start + len(buffer)]
+        buffer[: len(chunk)] = chunk
+        connection.receive_data(memoryview(buffer)[: len(chunk)])
+
+    request_event = connection.next_event()
+    assert isinstance(request_event, h11r.Request)
+    assert request_event.headers == ((b"Host", b"example.test"),)
+
+
+def test_strided_memoryview_inputs_keep_copying_compatibility() -> None:
+    client = h11r.Connection(h11r.Role.CLIENT)
+    wire = client.send_request(
+        b"GET",
+        memoryview(b"/_i_t_e_m_s")[::2],
+        [(memoryview(b"H_o_s_t")[::2], b"example.test")],
+    )
+
+    interleaved = bytearray(len(wire) * 2)
+    interleaved[::2] = wire
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(memoryview(interleaved)[::2])
+
+    request = server.next_event()
+    assert isinstance(request, h11r.Request)
+    assert request.target == b"/items"
+    assert request.headers == ((b"Host", b"example.test"),)
+
+
+def test_signed_byte_memoryview_inputs_keep_copying_compatibility() -> None:
+    client = h11r.Connection(h11r.Role.CLIENT)
+    wire = client.send_request(
+        memoryview(b"POST").cast("b"),
+        b"/",
+        [(b"Host", b"example.test"), (b"Content-Length", b"4")],
+    )
+    wire += client.send_data(memoryview(b"body").cast("b"))
+    wire += client.end_of_message()
+
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(wire)
+    assert isinstance(server.next_event(), h11r.Request)
+    body = server.next_event()
+    assert isinstance(body, h11r.Data)
+    assert body.data == b"body"
+    assert isinstance(server.next_event(), h11r.EndOfMessage)
+
+
 def test_direct_api_and_receive_events() -> None:
     connection = h11r.Connection(h11r.Role.SERVER)
     connection.receive_data(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")

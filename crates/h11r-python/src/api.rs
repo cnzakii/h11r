@@ -3,6 +3,7 @@
 use h11r as core;
 use h11r::{Method, StatusCode};
 use pyo3::PyTypeInfo;
+use pyo3::buffer::{PyUntypedBuffer, ReadOnlyCell};
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyMemoryView, PyModule, PyString, PyTuple};
@@ -453,9 +454,13 @@ impl PyConnection {
     ///     TypeError: If `data` does not implement the buffer protocol.
     ///     LocalProtocolError: If non-empty data follows EOF.
     fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        with_buffer_bytes(data, |bytes| {
-            self.0.receive_data(bytes).map_err(local_error)
+        with_buffer_bytes(data, |data| match data {
+            BufferBytes::Borrowed(bytes) => self.0.receive_data(bytes),
+            BufferBytes::Cells(cells) => self
+                .0
+                .receive_data_iter(cells.iter().map(ReadOnlyCell::get)),
         })?
+        .map_err(local_error)
     }
 
     /// Return the next peer event or a receive status.
@@ -616,9 +621,19 @@ impl PyConnection {
     ///     TypeError: If `data` does not implement the buffer protocol.
     ///     LocalProtocolError: If body data is forbidden or violates framing.
     fn send_data(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Py<PyBytes>> {
-        with_buffer_bytes(data, |data| self.0.send_data(data))?
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        let bytes = with_buffer_bytes(data, |data| match data {
+            BufferBytes::Borrowed(bytes) => self.0.send_data(bytes),
+            BufferBytes::Cells(cells) => {
+                let (prefix, suffix) = self.0.send_data_framing(cells.len())?;
+                let mut out = prefix;
+                out.reserve(cells.len() + suffix.len());
+                out.extend(cells.iter().map(ReadOnlyCell::get));
+                out.extend_from_slice(&suffix);
+                Ok(out)
+            }
+        })?
+        .map_err(local_error)?;
+        Ok(PyBytes::new(py, &bytes).unbind())
     }
 
     /// Return `(prefix, original_object, suffix)` without copying body bytes.
@@ -737,7 +752,7 @@ impl PyConnection {
     }
 }
 
-fn event_to_py(py: Python<'_>, event: core::Event) -> PyResult<Py<PyAny>> {
+fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py<PyAny>> {
     Ok(match event {
         core::Event::Request(value) => Py::new(py, PyRequest::from_core(py, value)?)?.into_any(),
         core::Event::InformationalResponse(value) => Py::new(
@@ -751,7 +766,7 @@ fn event_to_py(py: Python<'_>, event: core::Event) -> PyResult<Py<PyAny>> {
         core::Event::Data(value) => Py::new(
             py,
             PyData {
-                data: PyBytes::new(py, &value.data).unbind(),
+                data: PyBytes::new(py, value.data).unbind(),
                 chunk_start: value.chunk_start,
                 chunk_end: value.chunk_end,
             },
@@ -812,13 +827,33 @@ fn extract_headers(
         .collect()
 }
 
-fn with_buffer_bytes<R>(value: &Bound<'_, PyAny>, consume: impl FnOnce(&[u8]) -> R) -> PyResult<R> {
+enum BufferBytes<'a> {
+    Borrowed(&'a [u8]),
+    Cells(&'a [ReadOnlyCell<u8>]),
+}
+
+/// Runs `consume` over a safe view of a buffer-protocol object.
+///
+/// Immutable `bytes` are borrowed directly. Contiguous, `u8`-compatible
+/// buffers expose cells whose values must be read individually because another
+/// thread may mutate them. Other buffers retain the previous copying behavior.
+fn with_buffer_bytes<R>(
+    value: &Bound<'_, PyAny>,
+    consume: impl FnOnce(BufferBytes<'_>) -> R,
+) -> PyResult<R> {
     if let Ok(bytes) = value.cast::<PyBytes>() {
-        return Ok(consume(bytes.as_bytes()));
+        return Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())));
     }
+    let buffer = PyUntypedBuffer::get(value)?;
+    if let Ok(buffer) = buffer.as_typed::<u8>()
+        && let Some(cells) = buffer.as_slice(value.py())
+    {
+        return Ok(consume(BufferBytes::Cells(cells)));
+    }
+    drop(buffer);
     let view = PyMemoryView::from(value)?;
     let bytes = view.call_method0("tobytes")?.cast_into::<PyBytes>()?;
-    Ok(consume(bytes.as_bytes()))
+    Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())))
 }
 
 fn contiguous_buffer_len(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -858,7 +893,10 @@ fn text_or_buffer(_py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
         }
         Ok(text.as_bytes().to_vec())
     } else {
-        with_buffer_bytes(value, <[u8]>::to_vec)
+        with_buffer_bytes(value, |data| match data {
+            BufferBytes::Borrowed(bytes) => bytes.to_vec(),
+            BufferBytes::Cells(cells) => cells.iter().map(ReadOnlyCell::get).collect(),
+        })
     }
 }
 
@@ -871,8 +909,14 @@ fn extract_method(value: &Bound<'_, PyAny>) -> PyResult<Method> {
         return Method::from_bytes(text.as_bytes())
             .map_err(|error| PyValueError::new_err(error.to_string()));
     }
-    with_buffer_bytes(value, Method::from_bytes)?
-        .map_err(|error| PyValueError::new_err(error.to_string()))
+    with_buffer_bytes(value, |data| match data {
+        BufferBytes::Borrowed(bytes) => Method::from_bytes(bytes),
+        BufferBytes::Cells(cells) => {
+            let bytes: Vec<_> = cells.iter().map(ReadOnlyCell::get).collect();
+            Method::from_bytes(&bytes)
+        }
+    })?
+    .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 fn optional_bytes(py: Python<'_>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<u8>> {

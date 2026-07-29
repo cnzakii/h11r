@@ -1,5 +1,7 @@
 //! Python extension module for `h11r`.
 
+#![forbid(unsafe_code)]
+
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 

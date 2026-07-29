@@ -15,6 +15,20 @@ User-visible changes to h11r are recorded here.
   with `nbytes`, and h11r returns the identical object for the transport to
   write.
 
+### Changed
+
+- Python 3.11 is the minimum supported version; wheels now target the
+  `abi3-py311` stable ABI.
+- `receive_data()` and `send_data()` read C-contiguous, unsigned-byte
+  `bytearray` and `memoryview` arguments through safe per-byte buffer reads
+  directly into the Rust input or output allocation, so `socket.recv_into()`
+  loops with a reused buffer avoid a `bytes` allocation per read. Other buffer
+  layouts and formats retain the previous copying behavior. Immutable `bytes`
+  are borrowed directly.
+- Rust core: `Event::Data` borrows the connection's input buffer instead of
+  owning a copy, so an event must be dropped before the connection is used
+  again. The Python `Data` event still owns its `bytes`.
+
 ## [0.1.1] - 2026-07-21
 
 ### Added
