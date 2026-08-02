@@ -21,38 +21,38 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
 <line class="grid" x1="890.0" y1="108" x2="890.0" y2="492"/>
 <text class="secondary" x="890.0" y="102" text-anchor="middle" font-size="10">20×</text>
 <text class="primary" x="40" y="139" font-size="13" font-weight="500">Small GET</text>
-<text class="secondary" x="40" y="161" font-size="11">0.79 µs vs 12.56 µs</text>
+<text class="secondary" x="40" y="161" font-size="11">0.75 µs vs 12.25 µs</text>
 <text class="secondary" x="278" y="136" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="124" width="444.6" height="15" rx="7.5"/>
-<text class="primary" x="784.6" y="136" font-size="11" font-weight="500">15.9×</text>
+<rect class="candidate" x="330" y="124" width="458.5" height="15" rx="7.5"/>
+<text class="primary" x="798.5" y="136" font-size="11" font-weight="500">16.4×</text>
 <text class="secondary" x="278" y="159" text-anchor="end" font-size="10">h11</text>
 <rect class="reference" x="330" y="147" width="28.0" height="10" rx="5"/>
 <text class="primary" x="40" y="215" font-size="13" font-weight="500">Fixed body · 1 KiB</text>
-<text class="secondary" x="40" y="237" font-size="11">1.12 µs vs 16.49 µs</text>
+<text class="secondary" x="40" y="237" font-size="11">1.04 µs vs 15.26 µs</text>
 <text class="secondary" x="278" y="212" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="200" width="412.5" height="15" rx="7.5"/>
-<text class="primary" x="752.5" y="212" font-size="11" font-weight="500">14.7×</text>
+<rect class="candidate" x="330" y="200" width="409.2" height="15" rx="7.5"/>
+<text class="primary" x="749.2" y="212" font-size="11" font-weight="500">14.6×</text>
 <text class="secondary" x="278" y="235" text-anchor="end" font-size="10">h11</text>
 <rect class="reference" x="330" y="223" width="28.0" height="10" rx="5"/>
 <text class="primary" x="40" y="291" font-size="13" font-weight="500">Fragmented GET · 16 B</text>
-<text class="secondary" x="40" y="313" font-size="11">1.07 µs vs 14.46 µs</text>
+<text class="secondary" x="40" y="313" font-size="11">0.98 µs vs 13.57 µs</text>
 <text class="secondary" x="278" y="288" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="276" width="377.2" height="15" rx="7.5"/>
-<text class="primary" x="717.2" y="288" font-size="11" font-weight="500">13.5×</text>
+<rect class="candidate" x="330" y="276" width="386.1" height="15" rx="7.5"/>
+<text class="primary" x="726.1" y="288" font-size="11" font-weight="500">13.8×</text>
 <text class="secondary" x="278" y="311" text-anchor="end" font-size="10">h11</text>
 <rect class="reference" x="330" y="299" width="28.0" height="10" rx="5"/>
 <text class="primary" x="40" y="367" font-size="13" font-weight="500">Chunked stream · 64 KiB</text>
-<text class="secondary" x="40" y="389" font-size="11">7.33 µs vs 69.45 µs</text>
+<text class="secondary" x="40" y="389" font-size="11">7.08 µs vs 68.14 µs</text>
 <text class="secondary" x="278" y="364" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="352" width="265.4" height="15" rx="7.5"/>
-<text class="primary" x="605.4" y="364" font-size="11" font-weight="500">9.5×</text>
+<rect class="candidate" x="330" y="352" width="269.6" height="15" rx="7.5"/>
+<text class="primary" x="609.6" y="364" font-size="11" font-weight="500">9.6×</text>
 <text class="secondary" x="278" y="387" text-anchor="end" font-size="10">h11</text>
 <rect class="reference" x="330" y="375" width="28.0" height="10" rx="5"/>
 <text class="primary" x="40" y="443" font-size="13" font-weight="500">Client/server round trip</text>
-<text class="secondary" x="40" y="465" font-size="11">1.66 µs vs 29.33 µs</text>
+<text class="secondary" x="40" y="465" font-size="11">1.58 µs vs 28.45 µs</text>
 <text class="secondary" x="278" y="440" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="428" width="493.7" height="15" rx="7.5"/>
-<text class="primary" x="833.7" y="440" font-size="11" font-weight="500">17.6×</text>
+<rect class="candidate" x="330" y="428" width="505.6" height="15" rx="7.5"/>
+<text class="primary" x="845.6" y="440" font-size="11" font-weight="500">18.1×</text>
 <text class="secondary" x="278" y="463" text-anchor="end" font-size="10">h11</text>
 <rect class="reference" x="330" y="451" width="28.0" height="10" rx="5"/>
 <text class="secondary" x="40" y="518" font-size="10">h11r 0.2.0 · h11 0.16.0 · CPython 3.12.13 (64-bit)</text>
