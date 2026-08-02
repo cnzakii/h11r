@@ -157,11 +157,11 @@ be serialized by its caller.
 
 ## Relationship to h11
 
-`h11r` follows the Sans-I/O connection and event model established by
-[`h11`](https://github.com/python-hyper/h11), but it does not depend on `h11`
-at runtime and is not a drop-in replacement. Its Python API keeps familiar
-roles, events, and connection cycles while using dedicated send methods and
-its own types.
+`h11r` is an independent Sans-I/O HTTP/1.1 protocol engine with a Rust core
+and a typed Python API. It performs no network I/O and does not depend on the
+Python [`h11`](https://github.com/python-hyper/h11) package at runtime. `h11r`
+and `h11` occupy the same protocol-engine layer, but their public APIs differ,
+so switching between them requires adapting application integration code.
 
 The Rust core uses [`httparse`](https://github.com/seanmonstar/httparse) for
 request and response heads and trailer fields. `h11r` implements framing,
@@ -169,8 +169,9 @@ buffering and resource limits, wire serialization, and its public Rust and
 Python APIs.
 
 Interoperability tests exercise both `h11r`-client/`h11`-server and
-`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. `h11` remains
-a mature pure-Python library with its own established API and ecosystem.
+`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. They establish
+wire-level compatibility, not API compatibility. `h11` remains a mature
+pure-Python library with its own established API and ecosystem.
 
 ## Contributing
 

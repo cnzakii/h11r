@@ -4,6 +4,8 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-02
+
 ### Added
 
 - A searchable Zensical documentation site with a guided learning path,
