@@ -22,6 +22,7 @@ test-python:
 
 # Keep the public benchmark summaries derived from the recorded pyperf result.
 docs-benchmark:
+	@! grep -Eq '"(hostname|python_executable)"' docs/assets/python-benchmark.json
 	uv run --locked --group benchmark python \
 		crates/h11r-python/benchmarks/render_results.py \
 		docs/assets/python-benchmark.json \

@@ -154,7 +154,10 @@ UV_PYTHON=3.12 uv run --locked --group benchmark python -m pyperf compare_to \
 ```
 
 Set `UV_PYTHON=3.14t` instead in every command to repeat the comparison on
-free-threaded CPython. Do not commit machine-specific pyperf result files.
+free-threaded CPython. Do not commit ad hoc pyperf comparison files. The
+canonical `docs/assets/python-benchmark.json` is the only checked-in result;
+remove `hostname` and `python_executable` metadata before committing it, then
+regenerate its chart with `make docs-benchmark`.
 
 Report the workload, environment, versions, and before-and-after results. A
 faster result must preserve equivalent protocol behavior.

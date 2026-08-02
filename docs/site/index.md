@@ -1,5 +1,5 @@
 ---
-description: A fast, typed Sans-I/O HTTP/1.1 library for Python.
+description: A fast, typed Sans-I/O HTTP/1.1 engine with a Rust core and Python API.
 ---
 
 <div class="home-intro" markdown>
@@ -8,7 +8,7 @@ description: A fast, typed Sans-I/O HTTP/1.1 library for Python.
 # h11r
 
 <p class="home-intro__tagline">
-A fast, typed Sans-I/O HTTP/1.1 library for Python.
+A fast, typed Sans-I/O HTTP/1.1 engine with a Rust core and Python API.
 </p>
 
 <p class="home-intro__summary">
@@ -130,10 +130,11 @@ The Rust core uses
 heads and trailer fields. `h11r` implements framing, buffering and resource
 limits, wire serialization, and its public Rust and Python APIs.
 
-Interoperability tests exercise both `h11r`-client/`h11`-server and
-`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. They establish
-wire-level compatibility, not API compatibility. `h11` remains a mature
-pure-Python library with its own established API and ecosystem.
+Interoperability tests verify representative `h11r`-client/`h11`-server and
+`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. They provide
+evidence for those exchanges, not an API-compatibility or exhaustive
+wire-compatibility guarantee. `h11` remains a mature pure-Python library with
+its own established API and ecosystem.
 
 [Inspect the interoperability tests ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/crates/h11r-python/tests/test_interop.py)
 
