@@ -4,6 +4,8 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-02
+
 ### Added
 
 - A searchable Zensical documentation site with a guided learning path,
@@ -25,6 +27,9 @@ User-visible changes to h11r are recorded here.
   loops with a reused buffer avoid a `bytes` allocation per read. Other buffer
   layouts and formats retain the previous copying behavior. Immutable `bytes`
   are borrowed directly.
+- Back-to-back `pyperf` runs of release builds measured 3.5%–14.7% higher
+  throughput than 0.1.0 across five protocol-layer workloads. These results
+  exclude socket, TLS, async runtime, and application overhead.
 - Rust core: `Event::Data` borrows the connection's input buffer instead of
   owning a copy, so an event must be dropped before the connection is used
   again. The Python `Data` event still owns its `bytes`.

@@ -5,7 +5,32 @@ requires-python = ">=3.11"
 [manifest]
 members = [
     "h11r",
-    "h11r-workspace",
+]
+
+[manifest.dependency-groups]
+benchmark = [{ name = "pyperf", specifier = ">=2.10,<3" }]
+dev = [
+    { name = "coverage", specifier = ">=7.15.2,<8" },
+    { name = "h11", specifier = "==0.16.0" },
+    { name = "maturin", specifier = ">=1.14,<2.0" },
+    { name = "pytest", specifier = ">=9.0,<10" },
+    { name = "ruff", specifier = ">=0.16.0,<0.17" },
+    { name = "ty", specifier = ">=0.0.64,<0.1" },
+    { name = "wsproto", specifier = "==1.3.2" },
+]
+docs = [
+    { name = "mkdocstrings-python", specifier = "==2.0.5" },
+    { name = "zensical", specifier = "==0.0.51" },
+]
+lint = [
+    { name = "ruff", specifier = ">=0.16.0,<0.17" },
+    { name = "ty", specifier = ">=0.0.64,<0.1" },
+]
+test = [
+    { name = "coverage", specifier = ">=7.15.2,<8" },
+    { name = "h11", specifier = "==0.16.0" },
+    { name = "pytest", specifier = ">=9.0,<10" },
+    { name = "wsproto", specifier = "==1.3.2" },
 ]
 
 [[package]]
@@ -155,67 +180,6 @@ wheels = [
 [[package]]
 name = "h11r"
 source = { editable = "crates/h11r-python" }
-
-[[package]]
-name = "h11r-workspace"
-version = "0.1.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-benchmark = [
-    { name = "pyperf" },
-]
-dev = [
-    { name = "coverage" },
-    { name = "h11" },
-    { name = "maturin" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "ty" },
-    { name = "wsproto" },
-]
-docs = [
-    { name = "mkdocstrings-python" },
-    { name = "zensical" },
-]
-lint = [
-    { name = "ruff" },
-    { name = "ty" },
-]
-test = [
-    { name = "coverage" },
-    { name = "h11" },
-    { name = "pytest" },
-    { name = "wsproto" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-benchmark = [{ name = "pyperf", specifier = ">=2.10,<3" }]
-dev = [
-    { name = "coverage", specifier = ">=7.15.2,<8" },
-    { name = "h11", specifier = "==0.16.0" },
-    { name = "maturin", specifier = ">=1.14,<2.0" },
-    { name = "pytest", specifier = ">=9.0,<10" },
-    { name = "ruff", specifier = ">=0.16.0,<0.17" },
-    { name = "ty", specifier = ">=0.0.64,<0.1" },
-    { name = "wsproto", specifier = "==1.3.2" },
-]
-docs = [
-    { name = "mkdocstrings-python", specifier = "==2.0.5" },
-    { name = "zensical", specifier = "==0.0.51" },
-]
-lint = [
-    { name = "ruff", specifier = ">=0.16.0,<0.17" },
-    { name = "ty", specifier = ">=0.0.64,<0.1" },
-]
-test = [
-    { name = "coverage", specifier = ">=7.15.2,<8" },
-    { name = "h11", specifier = "==0.16.0" },
-    { name = "pytest", specifier = ">=9.0,<10" },
-    { name = "wsproto", specifier = "==1.3.2" },
-]
 
 [[package]]
 name = "iniconfig"

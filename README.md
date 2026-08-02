@@ -5,7 +5,7 @@
 <h1 align="center">h11r</h1>
 
 <p align="center">
-  <strong>A fast, typed <a href="https://sans-io.readthedocs.io/">Sans-I/O</a> HTTP/1.1 library for Python.</strong>
+  <strong>A fast, typed <a href="https://sans-io.readthedocs.io/">Sans-I/O</a> HTTP/1.1 engine with a Rust core and Python API.</strong>
 </p>
 
 <p align="center">
@@ -19,11 +19,12 @@
   <a href="https://github.com/cnzakii/h11r/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-`h11r` is a low-level HTTP/1.1 library for Python applications that already own
-their network I/O. Its send methods produce wire bytes; received peer bytes
-become immutable Python events. The library enforces message framing,
-connection state, and protocol errors while your code keeps control of the
-transport, runtime, and application policy.
+`h11r` is a low-level HTTP/1.1 protocol engine with a transport-independent
+Rust core and a typed Python API. Applications own their network I/O: send
+methods produce wire bytes, while received peer bytes become immutable Python
+events. The library enforces message framing, connection state, and protocol
+errors while your code keeps control of transport, runtime, and application
+policy.
 
 Use it to build HTTP/1.1 clients, servers, proxies, protocol adapters, or test
 tools. It is not a ready-made HTTP client that opens connections and sends
@@ -47,7 +48,7 @@ requests for you.
 
 ## Quick Start
 
-Add `h11r` to a uv-managed project:
+For Python, add `h11r` to a uv-managed project:
 
 ```console
 uv add h11r
@@ -57,6 +58,12 @@ Or install it with pip:
 
 ```console
 pip install h11r
+```
+
+For Rust, add the protocol core and use its [docs.rs API][rust-api]:
+
+```console
+cargo add h11r
 ```
 
 Create a client-role connection, serialize one bodyless request, and parse a
@@ -145,8 +152,9 @@ I/O and apply application policy.
 
 It supports client and server roles, HTTP/1.0 peers, `Content-Length` and
 chunked framing, keep-alive cycles, informational responses, trailers, and
-protocol handoff after Upgrade. Input size and header count have independent
-limits, and local API misuse is reported separately from remote protocol
+protocol handoff after Upgrade. Header and trailer section byte size and field
+count have independent limits; application body limits remain the caller's
+responsibility. Local API misuse is reported separately from remote protocol
 errors.
 
 The Python package supports GIL-enabled CPython 3.11 through 3.14 and
@@ -157,20 +165,22 @@ be serialized by its caller.
 
 ## Relationship to h11
 
-`h11r` follows the Sans-I/O connection and event model established by
-[`h11`](https://github.com/python-hyper/h11), but it does not depend on `h11`
-at runtime and is not a drop-in replacement. Its Python API keeps familiar
-roles, events, and connection cycles while using dedicated send methods and
-its own types.
+`h11r` is an independent Sans-I/O HTTP/1.1 protocol engine with a Rust core
+and a typed Python API. It performs no network I/O and does not depend on the
+Python [`h11`](https://github.com/python-hyper/h11) package at runtime. `h11r`
+and `h11` occupy the same protocol-engine layer, but their public APIs differ,
+so switching between them requires adapting application integration code.
 
 The Rust core uses [`httparse`](https://github.com/seanmonstar/httparse) for
 request and response heads and trailer fields. `h11r` implements framing,
 buffering and resource limits, wire serialization, and its public Rust and
 Python APIs.
 
-Interoperability tests exercise both `h11r`-client/`h11`-server and
-`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. `h11` remains
-a mature pure-Python library with its own established API and ecosystem.
+Interoperability tests verify representative `h11r`-client/`h11`-server and
+`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. They provide
+evidence for those exchanges, not an API-compatibility or exhaustive
+wire-compatibility guarantee. `h11` remains a mature pure-Python library with
+its own established API and ecosystem.
 
 ## Contributing
 
@@ -194,3 +204,4 @@ MIT
 [integration-guide]: https://h11r.readthedocs.io/en/stable/integration/
 [advanced-guide]: https://h11r.readthedocs.io/en/stable/advanced/
 [contributing-guide]: https://github.com/cnzakii/h11r/blob/main/CONTRIBUTING.md
+[rust-api]: https://docs.rs/h11r
