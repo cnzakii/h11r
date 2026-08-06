@@ -247,6 +247,37 @@ def test_upgrade_pause_and_trailing_data_cross_the_python_boundary() -> None:
     assert client.trailing_data == (b"server-protocol-data", False)
 
 
+def test_buffered_bytes_crosses_the_python_boundary() -> None:
+    # The backlog as a count rather than as bytes, so a caller applying
+    # transport backpressure can consult it after every receive without
+    # copying what it is measuring.
+    server = h11r.Connection(h11r.Role.SERVER)
+    assert server.buffered_bytes == 0
+
+    head = b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 6\r\n\r\n"
+    server.receive_data(head)
+    assert server.buffered_bytes == len(head)
+
+    # Parsing the head consumes it; body that arrived with it stays counted,
+    # and more of it accumulates while the reader is elsewhere.
+    server.receive_data(b"abc")
+    assert isinstance(server.next_event(), h11r.Request)
+    assert server.buffered_bytes == 3
+    server.receive_data(b"def")
+    assert server.buffered_bytes == 6
+
+    body = server.next_event()
+    assert isinstance(body, h11r.Data)
+    assert bytes(body.data) == b"abcdef"
+    assert server.buffered_bytes == 0
+    assert isinstance(server.next_event(), h11r.EndOfMessage)
+
+    # A pipelined successor is backlog too, and the same bytes `trailing_data`
+    # reports at the message boundary.
+    server.receive_data(b"GET /next HTTP/1.1\r\n")
+    assert server.buffered_bytes == len(server.trailing_data[0]) == 20
+
+
 def test_connection_close_event_crosses_the_python_boundary() -> None:
     # RFC 9112 Section 9.6 makes transport closure terminal.
     # https://www.rfc-editor.org/rfc/rfc9112.html#section-9.6

@@ -4,6 +4,14 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- `Connection.buffered_bytes` reports how many received bytes are held but not
+  yet parsed. `trailing_data` already exposed those bytes, but only by copying
+  them, which a transport adapter cannot afford after every `receive_data()`.
+  A count lets an adapter that pushes bytes in as they arrive apply read
+  back-pressure against its own high- and low-water marks.
+
 ## [0.2.0] - 2026-08-02
 
 ### Added

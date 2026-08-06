@@ -89,6 +89,27 @@ while True:
 The two `process_*` calls are the application callbacks named in the table
 above; they are not functions provided by `h11r`.
 
+## Apply read back-pressure
+
+An adapter that pushes bytes in as they arrive, rather than reading only on
+`NEED_DATA`, accepts them at the peer's pace. When the application consumes
+body fragments more slowly than they arrive, that backlog grows to the whole
+body. `buffered_bytes` reports it as a count, so an adapter can consult it
+after every `receive_data()` without copying the bytes it is measuring:
+
+```python
+connection.receive_data(data)
+
+if connection.buffered_bytes >= high_water:
+    transport.pause_reading()
+```
+
+Resume once `next_event()` has brought the count back under a lower mark.
+Parsing removes bytes from the count as events consume them, so an adapter
+needs no accounting of its own. Choose both marks from the application's memory
+budget: `h11r` imposes none, and `max_head_bytes` bounds only an inbound head
+or trailer section.
+
 ## Write to the transport
 
 Every sending method returns bytes for the transport. The `write_all()`
@@ -135,6 +156,8 @@ Before treating an adapter as complete, confirm that it:
 - handles every event and receive status possible for its role;
 - writes all send results in order;
 - applies application body, timeout, and concurrency limits;
+- bounds its own receive backlog with `buffered_bytes` when it pushes bytes in
+  rather than reading on `NEED_DATA`;
 - calls `start_next_cycle()` only when reuse is legal;
 - transfers `trailing_data` when HTTP hands off to another protocol;
 - catches `RemoteProtocolError` separately from local API misuse.
