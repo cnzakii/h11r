@@ -104,11 +104,12 @@ if connection.buffered_bytes >= high_water:
     transport.pause_reading()
 ```
 
-Resume once `next_event()` has brought the count back under a lower mark.
-Parsing removes bytes from the count as events consume them, so an adapter
-needs no accounting of its own. Choose both marks from the application's memory
-budget: `h11r` imposes none, and `max_head_bytes` bounds only an inbound head
-or trailer section.
+Resume once `next_event()` has brought the count back under a lower mark. If it
+returns `NEED_DATA`, resume even while the count remains high: an incomplete
+head, chunk-size line, or trailer section cannot be consumed yet. Set
+`max_head_bytes` within the application's memory budget so those sections stay
+bounded while the parser waits. Parsing removes body bytes from the count as
+events consume them, so an adapter needs no body accounting of its own.
 
 ## Write to the transport
 
@@ -156,8 +157,8 @@ Before treating an adapter as complete, confirm that it:
 - handles every event and receive status possible for its role;
 - writes all send results in order;
 - applies application body, timeout, and concurrency limits;
-- bounds its own receive backlog with `buffered_bytes` when it pushes bytes in
-  rather than reading on `NEED_DATA`;
+- applies high- and low-water marks to `buffered_bytes` for push-style reads,
+  while letting `NEED_DATA` resume them;
 - calls `start_next_cycle()` only when reuse is legal;
 - transfers `trailing_data` when HTTP hands off to another protocol;
 - catches `RemoteProtocolError` separately from local API misuse.

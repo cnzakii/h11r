@@ -1662,38 +1662,3 @@ fn rejected_connect_cannot_reuse_the_h11r_connection() {
     assert_eq!(client.peer_state(), State::MustClose);
     assert!(client.start_next_cycle().is_err());
 }
-
-#[test]
-fn buffered_bytes_counts_input_that_has_arrived_ahead_of_the_reader() {
-    // A caller applying transport backpressure needs the backlog after every
-    // receive, which `trailing_data` can only answer by handing over the bytes.
-    let mut server = Connection::new(Role::Server, Limits::default());
-    assert_eq!(server.buffered_bytes(), 0);
-
-    let head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n\r\n";
-    server.receive_data(head).unwrap();
-    assert_eq!(server.buffered_bytes(), head.len());
-
-    // Parsing the head consumes it; the body that came with it stays counted.
-    server.receive_data(b"abc").unwrap();
-    assert!(matches!(event(&mut server), Event::Request(_)));
-    assert_eq!(server.buffered_bytes(), 3);
-
-    // Body arriving while the reader is elsewhere accumulates, which is the
-    // condition backpressure exists to notice.
-    server.receive_data(b"def").unwrap();
-    assert_eq!(server.buffered_bytes(), 6);
-
-    assert_eq!(
-        event(&mut server),
-        Event::Data(data(b"abcdef", false, false))
-    );
-    assert_eq!(server.buffered_bytes(), 0);
-    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
-    assert_eq!(server.buffered_bytes(), 0);
-
-    // A pipelined successor is backlog too, and the same bytes `trailing_data`
-    // reports at the message boundary.
-    server.receive_data(b"GET /next HTTP/1.1\r\n").unwrap();
-    assert_eq!(server.buffered_bytes(), server.trailing_data().0.len());
-}

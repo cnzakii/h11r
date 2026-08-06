@@ -116,18 +116,6 @@ impl Connection {
         (self.input.as_slice(), self.eof)
     }
 
-    /// Returns how many received bytes are held but not yet parsed.
-    ///
-    /// The same bytes [`trailing_data`](Self::trailing_data) exposes, counted
-    /// rather than borrowed, so a caller can consult the backlog after every
-    /// `receive_data` without paying for the bytes themselves. Parsing removes
-    /// bytes from this count as `next_event` consumes them, so mid-body it is
-    /// what has arrived ahead of the reader.
-    #[must_use]
-    pub fn buffered_bytes(&self) -> usize {
-        self.input.as_slice().len()
-    }
-
     /// Appends peer bytes. Empty bytes mark transport EOF.
     ///
     /// # Errors

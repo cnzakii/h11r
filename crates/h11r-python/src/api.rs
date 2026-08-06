@@ -755,7 +755,7 @@ impl PyConnection {
     /// How many received bytes are held but not yet parsed.
     #[getter]
     fn buffered_bytes(&self) -> usize {
-        self.0.buffered_bytes()
+        self.0.trailing_data().0.len()
     }
 }
 
