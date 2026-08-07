@@ -428,7 +428,7 @@ impl PyConnectionClosed {
 ///         for `100 Continue`.
 ///     trailing_data (tuple[bytes, bool]): Bytes retained beyond the HTTP
 ///         boundary and whether transport EOF was received.
-///     buffered_bytes (int): How many received bytes are held but not yet
+///     buffered_nbytes (int): How many received bytes are held but not yet
 ///         parsed.
 ///
 /// Raises:
@@ -754,7 +754,7 @@ impl PyConnection {
     }
     /// How many received bytes are held but not yet parsed.
     #[getter]
-    fn buffered_bytes(&self) -> usize {
+    fn buffered_nbytes(&self) -> usize {
         self.0.trailing_data().0.len()
     }
 }
