@@ -20,7 +20,7 @@ benchmark = [
 
 # Public site generation and Python API reference.
 docs = [
-    "mkdocstrings-python==2.0.5",
+    "mkdocstrings-python==2.0.7",
     "zensical==0.0.55",
 ]
 
