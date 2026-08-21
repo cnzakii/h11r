@@ -428,6 +428,8 @@ impl PyConnectionClosed {
 ///         for `100 Continue`.
 ///     trailing_data (tuple[bytes, bool]): Bytes retained beyond the HTTP
 ///         boundary and whether transport EOF was received.
+///     buffered_nbytes (int): How many received bytes are held but not yet
+///         parsed.
 ///
 /// Raises:
 ///     ValueError: If any inbound limit is zero.
@@ -749,6 +751,11 @@ impl PyConnection {
     fn trailing_data<'py>(&self, py: Python<'py>) -> (Bound<'py, PyBytes>, bool) {
         let (data, eof) = self.0.trailing_data();
         (PyBytes::new(py, data), eof)
+    }
+    /// How many received bytes are held but not yet parsed.
+    #[getter]
+    fn buffered_nbytes(&self) -> usize {
+        self.0.trailing_data().0.len()
     }
 }
 

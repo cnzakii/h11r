@@ -4,6 +4,13 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Python's `Connection.buffered_nbytes` reports how many received bytes are held
+  but not yet parsed. `trailing_data` already exposed those bytes, but copied
+  them on every access. Their byte length lets an adapter that pushes bytes in
+  as they arrive apply read back-pressure without materializing the backlog.
+
 ## [0.2.0] - 2026-08-02
 
 ### Added
