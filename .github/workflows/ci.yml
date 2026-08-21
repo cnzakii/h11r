@@ -144,7 +144,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@v2.85.8
+      - uses: taiki-e/install-action@v2.86.3
         with:
           tool: cargo-llvm-cov@0.8.7
       - run: uv sync --locked
