@@ -6,17 +6,17 @@ updates:
       - "/"
       - "/fuzz"
     schedule:
-      interval: weekly
+      interval: monthly
 
   - package-ecosystem: uv
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
     ignore:
       # `@1.88` selects the tested MSRV, not an action version to advance.
       - dependency-name: dtolnay/rust-toolchain
