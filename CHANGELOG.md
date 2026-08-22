@@ -4,6 +4,8 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-22
+
 ### Added
 
 - Python's `Connection.buffered_nbytes` reports how many received bytes are held
