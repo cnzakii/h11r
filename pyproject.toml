@@ -2,7 +2,7 @@
 dev = [
     { include-group = "lint" },
     { include-group = "test" },
-    "maturin>=1.14,<2.0",
+    "maturin>=1.15.0,<2.0",
 ]
 lint = [
     "ruff>=0.16.3,<0.17",
