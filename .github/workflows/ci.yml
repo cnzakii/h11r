@@ -88,14 +88,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.preview || false }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
         include:
-          # Prerelease interpreters provide forward-compatibility coverage;
-          # they are not part of the supported release matrix yet.
+          # CPython 3.15 is supported but still a prerelease, so its failures
+          # do not fail the required checks.
           - os: ubuntu-latest
             python-version: "3.15"
             preview: true
@@ -125,6 +126,39 @@ jobs:
       - run: uv sync --locked
       - run: uv --directory crates/h11r-python run --locked maturin develop --release
       - run: uv run --locked pytest
+
+  python-musl:
+    name: Python 3.12 on musllinux ${{ matrix.arch }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-latest
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The runner cannot execute JavaScript actions inside Alpine containers
+      # on arm64, so the tests run through docker run instead of a job
+      # container.
+      - name: Test in Alpine
+        run: |
+          docker run --rm --volume "$PWD:/work" --workdir /work \
+            --env UV_PYTHON_DOWNLOADS=never \
+            ghcr.io/astral-sh/uv:python3.12-alpine sh -euxc '
+              apk add --no-cache gcc musl-dev rustup
+              rustup-init -y --profile minimal
+              . "$HOME/.cargo/env"
+              uv sync --locked
+              uv --directory crates/h11r-python run --locked maturin develop --release
+              uv run --locked pytest
+            '
 
   coverage:
     name: Coverage
@@ -183,6 +217,7 @@ jobs:
       - rust
       - msrv
       - python
+      - python-musl
       - coverage
       - documentation
     runs-on: ubuntu-latest

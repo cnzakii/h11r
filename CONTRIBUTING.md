@@ -46,10 +46,10 @@ uv sync --locked
 ```
 
 The default development version is Python 3.12. Continuous integration tests
-GIL-enabled Python 3.11 through 3.14 and free-threaded Python 3.14t on Linux.
-One interpreter also runs on each wheel target, while prerelease Python 3.15
-and 3.15t are tested for forward compatibility. Contributors do not need to
-reproduce the full matrix locally.
+GIL-enabled Python 3.11 through 3.15 and free-threaded Python 3.14t and 3.15t
+on Linux. One interpreter also runs on each wheel target. Python 3.15 and 3.15t
+failures do not fail the required checks while they are prereleases.
+Contributors do not need to reproduce the full matrix locally.
 
 ## Making Changes
 
@@ -106,7 +106,7 @@ uv sync --locked --python 3.14t
 UV_PYTHON=3.14t make test-python
 ```
 
-Use `3.15t` in the same commands to exercise the prerelease interpreter.
+Use `3.15t` in the same commands to exercise that interpreter.
 
 Code changes run the supported Python and platform matrix in GitHub Actions.
 Relevant documentation changes run the strict documentation build separately.
