@@ -66,11 +66,13 @@ jobs:
         platform:
           - manylinux-x86_64
           - manylinux-aarch64
+          - musllinux-x86_64
+          - musllinux-aarch64
           - macos-x86_64
           - macos-aarch64
           - windows-x86_64
           - windows-aarch64
-        abi-profile: [abi3, cp314t]
+        abi-profile: [abi3, cp314t, abi3t]
         include:
           - platform: manylinux-x86_64
             os: ubuntu-22.04
@@ -80,6 +82,14 @@ jobs:
             os: ubuntu-24.04-arm
             target: aarch64
             manylinux: "2014"
+          - platform: musllinux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
+          - platform: musllinux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            manylinux: musllinux_1_2
           - platform: macos-x86_64
             os: macos-15-intel
             target: x86_64
@@ -96,14 +106,29 @@ jobs:
             os: windows-11-arm
             target: aarch64
             manylinux: auto
+          # pypa-interpreter is the interpreter path in the pypa manylinux and
+          # musllinux images. The musllinux build images from rust-cross do
+          # not ship CPython, so those builds pass interpreter-name and
+          # maturin resolves it from its bundled sysconfig data.
           - abi-profile: abi3
             python-version: "3.12"
-            manylinux-interpreter: /opt/python/cp312-cp312/bin/python
+            pypa-interpreter: /opt/python/cp312-cp312/bin/python
+            interpreter-name: python3.12
             wheel-tag: cp311-abi3
           - abi-profile: cp314t
             python-version: "3.14t"
-            manylinux-interpreter: /opt/python/cp314-cp314t/bin/python
+            pypa-interpreter: /opt/python/cp314-cp314t/bin/python
+            interpreter-name: python3.14t
             wheel-tag: cp314-cp314t
+          # The abi3t wheel is also the preferred wheel on GIL-enabled
+          # CPython 3.15+, so it is smoke-tested on both builds.
+          - abi-profile: abi3t
+            python-version: "3.15t"
+            pypa-interpreter: /opt/python/cp315-cp315t/bin/python
+            interpreter-name: python3.15t
+            gil-python-version: "3.15"
+            gil-pypa-interpreter: /opt/python/cp315-cp315/bin/python
+            wheel-tag: cp315-abi3.abi3t
     steps:
       - uses: actions/checkout@v7
         with:
@@ -112,6 +137,14 @@ jobs:
         id: build-python
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - uses: actions/setup-python@v7
+        id: gil-python
+        if: matrix.gil-python-version && !startsWith(matrix.platform, 'musllinux-')
+        with:
+          python-version: ${{ matrix.gil-python-version }}
+          allow-prereleases: true
+          update-environment: false
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
@@ -121,7 +154,7 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           args: >-
             --release --locked --compatibility pypi
-            --interpreter ${{ startsWith(matrix.platform, 'manylinux-') && matrix.manylinux-interpreter || steps.build-python.outputs.python-path }}
+            --interpreter ${{ startsWith(matrix.platform, 'manylinux-') && matrix.pypa-interpreter || startsWith(matrix.platform, 'musllinux-') && matrix.interpreter-name || steps.build-python.outputs.python-path }}
             --out dist
       - name: Validate wheel tag
         id: wheel
@@ -137,17 +170,45 @@ jobs:
             *) echo "unexpected wheel tag: $wheel" >&2; exit 1 ;;
           esac
           echo "path=$wheel" >> "$GITHUB_OUTPUT"
-      - name: Smoke-test native wheel
+      - name: Smoke-test wheel
         shell: bash
         working-directory: crates/h11r-python
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          WHEEL: ${{ steps.wheel.outputs.path }}
+          FREE_THREADED: ${{ matrix.abi-profile != 'abi3' }}
+          BUILD_PYTHON: ${{ steps.build-python.outputs.python-path }}
+          GIL_PYTHON: ${{ steps.gil-python.outputs.python-path }}
+          PYPA_INTERPRETER: ${{ matrix.pypa-interpreter }}
+          GIL_PYPA_INTERPRETER: ${{ matrix.gil-pypa-interpreter }}
         run: |
-          "${{ steps.build-python.outputs.python-path }}" -m pip install "${{ steps.wheel.outputs.path }}"
-          "${{ steps.build-python.outputs.python-path }}" -c "import h11r"
-      - name: Verify free-threaded import leaves the GIL disabled
-        if: matrix.abi-profile != 'abi3'
-        shell: bash
-        run: |
-          "${{ steps.build-python.outputs.python-path }}" -c "import h11r, sys, sysconfig; assert sysconfig.get_config_var('Py_GIL_DISABLED'); assert not sys._is_gil_enabled()"
+          check() {
+            "$@" -m pip install "$wheel"
+            "$@" -c "import h11r"
+          }
+          case "$PLATFORM" in
+            musllinux-*)
+              # The host Python links against glibc, so musl wheels are
+              # installed into the matching pypa musllinux image.
+              docker run --detach --name smoke --volume "$PWD/dist:/dist:ro" \
+                "quay.io/pypa/musllinux_1_2_$(uname -m)" sleep infinity
+              wheel="/dist/$(basename "$WHEEL")"
+              python=(docker exec smoke "$PYPA_INTERPRETER")
+              gil_python=(docker exec smoke "$GIL_PYPA_INTERPRETER")
+              ;;
+            *)
+              wheel="$WHEEL"
+              python=("$BUILD_PYTHON")
+              gil_python=("$GIL_PYTHON")
+              ;;
+          esac
+          check "${python[@]}"
+          if [ "$FREE_THREADED" = true ]; then
+            "${python[@]}" -c "import h11r, sys, sysconfig; assert sysconfig.get_config_var('Py_GIL_DISABLED'); assert not sys._is_gil_enabled()"
+          fi
+          if [ -n "$GIL_PYPA_INTERPRETER" ]; then
+            check "${gil_python[@]}"
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: python-${{ matrix.platform }}-${{ matrix.abi-profile }}

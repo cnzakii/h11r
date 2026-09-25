@@ -4,6 +4,13 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Wheels for musl-based Linux distributions such as Alpine (`musllinux_1_2`
+  on x86_64 and aarch64), which previously built from the source distribution.
+- `abi3t` stable-ABI wheels for CPython 3.15 and later, which install on both
+  GIL-enabled and free-threaded builds without compiling from source.
+
 ## [0.2.1] - 2026-08-22
 
 ### Added
