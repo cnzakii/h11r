@@ -20,7 +20,7 @@ env:
 jobs:
   validate:
     name: Validate release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       maturin-version: ${{ steps.maturin.outputs.version }}
       version: ${{ steps.version.outputs.version }}
@@ -75,15 +75,15 @@ jobs:
         abi-profile: [abi3, cp314t, abi3t]
         include:
           - platform: manylinux-x86_64
-            os: ubuntu-22.04
-            target: x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
             manylinux: "2014"
           - platform: manylinux-aarch64
             os: ubuntu-24.04-arm
-            target: aarch64
+            target: aarch64-unknown-linux-gnu
             manylinux: "2014"
           - platform: musllinux-x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             manylinux: musllinux_1_2
           - platform: musllinux-aarch64
@@ -91,21 +91,17 @@ jobs:
             target: aarch64-unknown-linux-musl
             manylinux: musllinux_1_2
           - platform: macos-x86_64
-            os: macos-15-intel
-            target: x86_64
-            manylinux: auto
+            os: macos-26-intel
+            target: x86_64-apple-darwin
           - platform: macos-aarch64
-            os: macos-latest
-            target: aarch64
-            manylinux: auto
+            os: macos-26
+            target: aarch64-apple-darwin
           - platform: windows-x86_64
-            os: windows-latest
-            target: x64
-            manylinux: auto
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
           - platform: windows-aarch64
             os: windows-11-arm
-            target: aarch64
-            manylinux: auto
+            target: aarch64-pc-windows-msvc
           # pypa-interpreter is the interpreter path in the pypa manylinux and
           # musllinux images. The musllinux build images from rust-cross do
           # not ship CPython, so those builds pass interpreter-name and
@@ -218,7 +214,7 @@ jobs:
   sdist:
     name: Source distribution
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -248,7 +244,7 @@ jobs:
     name: Publish to PyPI
     if: github.event_name == 'push'
     needs: [validate, wheels, sdist]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read
@@ -267,7 +263,7 @@ jobs:
     name: Publish to crates.io
     if: github.event_name == 'push'
     needs: [validate, wheels, sdist]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read
@@ -306,7 +302,7 @@ jobs:
     name: Publish GitHub release
     if: github.event_name == 'push'
     needs: [publish-pypi, publish-crate]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
