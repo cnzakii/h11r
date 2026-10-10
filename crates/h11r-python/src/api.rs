@@ -43,7 +43,7 @@ pyo3::create_exception!(
     rename_all = "SCREAMING_SNAKE_CASE",
     from_py_object
 )]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum PyRole {
     Client,
     Server,
