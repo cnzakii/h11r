@@ -133,13 +133,11 @@ jobs:
         id: build-python
         with:
           python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
       - uses: actions/setup-python@v7
         id: gil-python
         if: matrix.gil-python-version && !startsWith(matrix.platform, 'musllinux-')
         with:
           python-version: ${{ matrix.gil-python-version }}
-          allow-prereleases: true
           update-environment: false
       - name: Build wheel
         uses: PyO3/maturin-action@v1
