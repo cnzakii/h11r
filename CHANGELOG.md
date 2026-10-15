@@ -4,6 +4,8 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-15
+
 ### Added
 
 - Support for CPython 3.15 and free-threaded 3.15t.
