@@ -47,8 +47,7 @@ uv sync --locked
 
 The default development version is Python 3.12. Continuous integration tests
 GIL-enabled Python 3.11 through 3.15 and free-threaded Python 3.14t and 3.15t
-on Linux. One interpreter also runs on each wheel target. Python 3.15 and 3.15t
-failures do not fail the required checks while they are prereleases.
+on Linux. One interpreter also runs on each wheel target.
 Contributors do not need to reproduce the full matrix locally.
 
 ## Making Changes
