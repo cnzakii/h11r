@@ -20,7 +20,7 @@ env:
 jobs:
   changes:
     name: Classify changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.paths.outputs.code }}
       docs: ${{ steps.paths.outputs.docs }}
@@ -47,7 +47,7 @@ jobs:
     name: Lint and static analysis
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,7 +63,7 @@ jobs:
     name: Rust stable
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,7 +75,7 @@ jobs:
     name: Rust 1.88 (MSRV)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,33 +84,25 @@ jobs:
       - run: make test-rust
 
   python:
-    name: Python ${{ matrix.python-version }}${{ matrix.preview && ' preview' || '' }} on ${{ matrix.os }}
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        os: [ubuntu-24.04]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
         include:
-          # Prerelease interpreters provide forward-compatibility coverage;
-          # they are not part of the supported release matrix yet.
-          - os: ubuntu-latest
-            python-version: "3.15"
-            preview: true
-          - os: ubuntu-latest
-            python-version: "3.15t"
-            preview: true
           # One interpreter per additional platform exercises the native
           # extension without multiplying the full version matrix.
           - os: ubuntu-24.04-arm
             python-version: "3.12"
-          - os: macos-15-intel
+          - os: macos-26-intel
             python-version: "3.12"
-          - os: macos-latest
+          - os: macos-26
             python-version: "3.12"
-          - os: windows-latest
+          - os: windows-2025
             python-version: "3.12"
           - os: windows-11-arm
             python-version: "3.12"
@@ -126,11 +118,44 @@ jobs:
       - run: uv --directory crates/h11r-python run --locked maturin develop --release
       - run: uv run --locked pytest
 
+  python-musl:
+    name: Python 3.12 on musllinux ${{ matrix.arch }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The runner cannot execute JavaScript actions inside Alpine containers
+      # on arm64, so the tests run through docker run instead of a job
+      # container.
+      - name: Test in Alpine
+        run: |
+          docker run --rm --volume "$PWD:/work" --workdir /work \
+            --env UV_PYTHON_DOWNLOADS=never \
+            ghcr.io/astral-sh/uv:python3.12-alpine sh -euxc '
+              apk add --no-cache gcc musl-dev rustup
+              rustup-init -y --profile minimal
+              . "$HOME/.cargo/env"
+              uv sync --locked
+              uv --directory crates/h11r-python run --locked maturin develop --release
+              uv run --locked pytest
+            '
+
   coverage:
     name: Coverage
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # OIDC authenticates Codecov without a stored upload secret. Codecov's
     # GitHub App must be connected before the first upload.
     permissions:
@@ -164,7 +189,7 @@ jobs:
     name: Build documentation
     needs: changes
     if: needs.changes.outputs.docs == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -183,9 +208,10 @@ jobs:
       - rust
       - msrv
       - python
+      - python-musl
       - coverage
       - documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require successful affected checks
         env:
