@@ -1,0 +1,44 @@
+name: CodSpeed
+
+# Runs on every main push so pull requests always have a baseline to compare.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # CodSpeed uses OIDC, so no long-lived upload token is stored.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # CodSpeed's tracing needs the setup-python interpreter, not a uv-managed one.
+      - id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --locked --group benchmark
+        env:
+          UV_PYTHON: ${{ steps.python.outputs.python-path }}
+      - run: uv --directory crates/h11r-python run --no-sync maturin develop --release
+      - uses: CodSpeedHQ/action@v5.6.0
+        with:
+          mode: simulation
+          run: uv run --no-sync pytest crates/h11r-python/benchmarks/test_codspeed.py --codspeed

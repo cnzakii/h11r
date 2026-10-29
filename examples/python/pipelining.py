@@ -55,16 +55,15 @@ def receive_request(
 def send_text_response(
     connection: h11r.Connection, transport: socket.socket, text: str
 ) -> None:
-    body = text.encode("utf-8")
+    # body= sends the head, body, and end of message, adding Content-Length.
     transport.sendall(
         connection.send_response(
             200,
-            [("Content-Type", "text/plain"), ("Content-Length", str(len(body)))],
+            [("Content-Type", "text/plain")],
+            body=text.encode("utf-8"),
             reason="OK",
         )
     )
-    transport.sendall(connection.send_data(body))
-    transport.sendall(connection.end_of_message())
 
 
 def main() -> None:

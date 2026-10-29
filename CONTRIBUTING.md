@@ -45,7 +45,7 @@ rustup component add rustfmt clippy
 uv sync --locked
 ```
 
-The default development version is Python 3.12. Continuous integration tests
+The default development version is Python 3.13. Continuous integration tests
 GIL-enabled Python 3.11 through 3.15 and free-threaded Python 3.14t and 3.15t
 on Linux. One interpreter also runs on each wheel target.
 Contributors do not need to reproduce the full matrix locally.
@@ -123,6 +123,14 @@ uv run --locked --group benchmark python \
   crates/h11r-python/benchmarks/compare_h11.py
 ```
 
+[CodSpeed](https://codspeed.io/) runs the h11r side of the same workloads on
+every pull request and reports changes against `main`. Run them locally with:
+
+```console
+uv run --locked --group benchmark pytest \
+  crates/h11r-python/benchmarks/test_codspeed.py --codspeed
+```
+
 The receive-buffer benchmark isolates one 64 KiB `receive_data()` call and its
 `Data` event at the Python/Rust boundary. Run it against a release build and
 save the full pyperf result:
@@ -139,16 +147,16 @@ from each checkout, then let pyperf report the means and percentage changes:
 
 ```console
 # Run these commands in the main checkout.
-UV_PYTHON=3.12 uv sync --locked --group benchmark
-UV_PYTHON=3.12 uv --directory crates/h11r-python run --locked \
+UV_PYTHON=3.13 uv sync --locked --group benchmark
+UV_PYTHON=3.13 uv --directory crates/h11r-python run --locked \
   maturin develop --release
-UV_PYTHON=3.12 uv run --locked --group benchmark python \
+UV_PYTHON=3.13 uv run --locked --group benchmark python \
   crates/h11r-python/benchmarks/receive_buffer.py \
   --output /tmp/h11r-receive-main.json
 
 # Run the same sync, build, and benchmark commands in the change checkout, using
 # /tmp/h11r-receive-change.json as the output, then compare the saved results.
-UV_PYTHON=3.12 uv run --locked --group benchmark python -m pyperf compare_to \
+UV_PYTHON=3.13 uv run --locked --group benchmark python -m pyperf compare_to \
   /tmp/h11r-receive-main.json /tmp/h11r-receive-change.json
 ```
 
@@ -156,7 +164,8 @@ Set `UV_PYTHON=3.14t` instead in every command to repeat the comparison on
 free-threaded CPython. Do not commit ad hoc pyperf comparison files. The
 canonical `docs/assets/python-benchmark.json` is the only checked-in result;
 remove `hostname` and `python_executable` metadata before committing it, then
-regenerate its chart with `make docs-benchmark`.
+run `make docs-benchmark` to regenerate its chart, its table, and the README
+performance section from it.
 
 Report the workload, environment, versions, and before-and-after results. A
 faster result must preserve equivalent protocol behavior.

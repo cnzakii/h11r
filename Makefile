@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := check
 
-.PHONY: check lint test-rust test-python docs-benchmark docs-prepare docs docs-serve coverage
+.PHONY: check lint test-rust test-python fuzz docs-benchmark docs-prepare docs docs-serve coverage
 
 check: lint test-rust test-python docs
 
@@ -20,6 +20,15 @@ test-python:
 	uv --directory crates/h11r-python run --locked maturin develop --release
 	uv run --locked pytest
 
+# A deterministic pull-request-sized budget; see fuzz/README.md. The explicit
+# target stops a prebuilt musl cargo-fuzz from defaulting to its own triple,
+# which the address sanitizer cannot build.
+fuzz:
+	host="$$(rustc +nightly -vV | sed -n 's/^host: //p')"; \
+	for target in h11r_receive h11r_fragmentation h11r_send; do \
+		cargo +nightly fuzz run --target "$$host" "$$target" -- -runs=100000 -max_len=4096 || exit 1; \
+	done
+
 # Keep the public benchmark summaries derived from the recorded pyperf result.
 docs-benchmark:
 	@! grep -Eq '"(hostname|python_executable)"' docs/assets/python-benchmark.json
@@ -27,7 +36,8 @@ docs-benchmark:
 		crates/h11r-python/benchmarks/render_results.py \
 		docs/assets/python-benchmark.json \
 		--svg docs/assets/python-benchmark.svg \
-		--table target/docs/python-benchmark.md
+		--table docs/assets/python-benchmark.md \
+		--readme README.md
 
 # The API reference merges docstrings from the compiled PyO3 module, so prepare
 # it before a Zensical build.

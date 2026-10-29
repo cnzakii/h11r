@@ -6,7 +6,10 @@ use pyo3::PyTypeInfo;
 use pyo3::buffer::{PyUntypedBuffer, ReadOnlyCell};
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyMemoryView, PyModule, PyString, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{
+    PyAny, PyBool, PyBytes, PyIterator, PyList, PyMemoryView, PyModule, PyString, PyTuple,
+};
 
 pyo3::create_exception!(
     h11r,
@@ -127,13 +130,167 @@ enum PyReceiveStatus {
     Paused,
 }
 
-/// A parsed request head.
+/// Ordered header or trailer fields that behave like a tuple of
+/// `(name, value)` byte pairs.
+///
+/// Parsed fields stay in one Rust buffer until Python reads them: `get()` and
+/// `get_all()` look up names without building the pairs, and iteration,
+/// indexing, and comparison build them once. Construct one as
+/// `Headers(fields=None)` from `(name, value)` pairs to reuse fields across
+/// sends without converting them again; it compares equal to a tuple of the
+/// same byte pairs.
+#[pyclass(
+    name = "Headers",
+    module = "h11r",
+    frozen,
+    sequence,
+    skip_from_py_object
+)]
+struct PyHeaders {
+    fields: core::Headers,
+    /// The `(name, value)` pairs, built on first use.
+    items: PyOnceLock<Py<PyTuple>>,
+}
+
+impl PyHeaders {
+    fn new_py(py: Python<'_>, fields: core::Headers) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            Self {
+                fields,
+                items: PyOnceLock::new(),
+            },
+        )
+    }
+
+    fn items<'py>(&self, py: Python<'py>) -> PyResult<&Bound<'py, PyTuple>> {
+        if let Some(items) = self.items.get(py) {
+            return Ok(items.bind(py));
+        }
+        // Built outside the cell: allocation can run Python code, such as a
+        // finalizer, that reads these fields again, and re-entering an
+        // initializing cell deadlocks. Concurrent first reads build twice.
+        let items = py_headers(py, &self.fields)?.unbind();
+        Ok(self.items.get_or_init(py, || items).bind(py))
+    }
+}
+
+#[pymethods]
+impl PyHeaders {
+    #[new]
+    #[pyo3(signature = (fields = None))]
+    fn new(fields: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        Ok(Self {
+            fields: extract_headers(fields)?,
+            items: PyOnceLock::new(),
+        })
+    }
+
+    /// Return the first value of the field named `name`, or `default`.
+    ///
+    /// Field names match case-insensitively.
+    ///
+    /// Args:
+    ///     name (str | bytes | bytearray | memoryview): The field name.
+    ///     default (object): The result when no field matches.
+    ///
+    /// Returns:
+    ///     value (bytes | object): The first matching value, or `default`.
+    #[pyo3(signature = (name, default = None))]
+    fn get(
+        &self,
+        py: Python<'_>,
+        name: &Bound<'_, PyAny>,
+        default: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        with_text_or_buffer(name, |name| match self.fields.get_all(name).next() {
+            Some(value) => PyBytes::new(py, value).into_any().unbind(),
+            None => default.unwrap_or_else(|| py.None()),
+        })
+    }
+
+    /// Return the values of every field named `name`, in order.
+    ///
+    /// Field names match case-insensitively.
+    ///
+    /// Args:
+    ///     name (str | bytes | bytearray | memoryview): The field name.
+    ///
+    /// Returns:
+    ///     values (tuple[bytes, ...]): The matching values.
+    fn get_all<'py>(
+        &self,
+        py: Python<'py>,
+        name: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        with_text_or_buffer(name, |name| {
+            PyTuple::new(
+                py,
+                self.fields
+                    .get_all(name)
+                    .map(|value| PyBytes::new(py, value))
+                    .collect::<Vec<_>>(),
+            )
+        })?
+    }
+
+    fn __len__(&self) -> usize {
+        self.fields.len()
+    }
+
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        index: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.items(py)?.as_any().get_item(index)
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        self.items(py)?.try_iter()
+    }
+
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let equal = if let Ok(other) = other.cast::<Self>() {
+            self.fields == other.get().fields
+        } else if other.is_instance_of::<PyTuple>() {
+            self.items(py)?.eq(other)?
+        } else {
+            return Ok(py.NotImplemented());
+        };
+        Ok(PyBool::new(py, equal).to_owned().into_any().unbind())
+    }
+
+    // Hashes like the equal tuple of pairs.
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        self.items(py)?.hash()
+    }
+
+    // Supports `copy` and `pickle` as the tuple of pairs did.
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyTuple>,))> {
+        Ok((slf.get_type().into_any(), (slf.get().items(py)?.clone(),)))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let pairs = PyList::new(py, self.items(py)?)?;
+        Ok(format!("Headers({})", pairs.repr()?))
+    }
+}
+
+/// A request head.
+///
+/// `Connection.next_event()` returns parsed requests. Construct one directly,
+/// for example to compare it with a received event, as
+/// `Request(method, target, headers, *, http_version=None)`.
 ///
 /// Attributes:
 ///     method (bytes): Case-sensitive method bytes.
 ///     target (bytes): Request-target bytes from the HTTP request line. See RFC 9112
 ///         Section 3.2.
-///     headers (tuple[tuple[bytes, bytes], ...]): Ordered `(name, value)` byte pairs.
+///     headers (Headers): Ordered header fields.
 ///     http_version (bytes): Peer HTTP version bytes.
 #[pyclass(
     name = "Request",
@@ -149,8 +306,8 @@ struct PyRequest {
     method: Py<PyBytes>,
     /// The request target as bytes.
     target: Py<PyBytes>,
-    /// Ordered `(name, value)` byte pairs.
-    headers: Py<PyTuple>,
+    /// Ordered header fields.
+    headers: Py<PyHeaders>,
     /// The peer HTTP version as bytes.
     http_version: Py<PyBytes>,
 }
@@ -158,9 +315,9 @@ struct PyRequest {
 impl PyRequest {
     fn from_core(py: Python<'_>, value: core::Request) -> PyResult<Self> {
         Ok(Self {
-            method: PyBytes::new(py, value.method.as_bytes()).unbind(),
+            method: py_method(py, &value.method),
             target: PyBytes::new(py, &value.target).unbind(),
-            headers: py_headers(py, &value.headers)?.unbind(),
+            headers: PyHeaders::new_py(py, value.headers)?,
             http_version: py_version(py, value.http_version).unbind(),
         })
     }
@@ -170,18 +327,58 @@ impl PartialEq for PyRequest {
     fn eq(&self, other: &Self) -> bool {
         bytes_eq(&self.method, &other.method)
             && bytes_eq(&self.target, &other.target)
-            && tuple_eq(&self.headers, &other.headers)
+            && headers_eq(&self.headers, &other.headers)
             && bytes_eq(&self.http_version, &other.http_version)
     }
 }
 
 impl Eq for PyRequest {}
 
+#[pymethods]
+impl PyRequest {
+    #[new]
+    #[pyo3(signature = (method, target, headers, *, http_version = None))]
+    fn new(
+        py: Python<'_>,
+        method: &Bound<'_, PyAny>,
+        target: &Bound<'_, PyAny>,
+        headers: &Bound<'_, PyAny>,
+        http_version: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        Self::from_core(
+            py,
+            core::Request {
+                method: extract_method(method)?,
+                target: text_or_buffer(py, target)?,
+                headers: extract_headers(Some(headers))?,
+                http_version: extract_version(py, http_version)?,
+            },
+        )
+    }
+
+    #[classattr]
+    fn __match_args__() -> (&'static str, &'static str, &'static str) {
+        ("method", "target", "headers")
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        repr_fields(
+            "Request",
+            &[
+                ("method", self.method.bind(py).as_any()),
+                ("target", self.target.bind(py).as_any()),
+                ("headers", self.headers.bind(py).as_any()),
+                ("http_version", self.http_version.bind(py).as_any()),
+            ],
+        )
+    }
+}
+
 #[derive(Debug)]
 struct PyResponseValue {
     status_code: u16,
     reason: Py<PyBytes>,
-    headers: Py<PyTuple>,
+    headers: Py<PyHeaders>,
     http_version: Py<PyBytes>,
 }
 
@@ -190,9 +387,41 @@ impl PyResponseValue {
         Ok(Self {
             status_code: value.status.as_u16(),
             reason: PyBytes::new(py, &value.reason).unbind(),
-            headers: py_headers(py, &value.headers)?.unbind(),
+            headers: PyHeaders::new_py(py, value.headers)?,
             http_version: py_version(py, value.http_version).unbind(),
         })
+    }
+}
+
+impl PyResponseValue {
+    fn new(
+        py: Python<'_>,
+        status_code: u16,
+        headers: Option<&Bound<'_, PyAny>>,
+        reason: Option<&Bound<'_, PyAny>>,
+        http_version: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        Self::from_core(
+            py,
+            core::Response {
+                status: status(status_code)?,
+                reason: optional_bytes(py, reason)?,
+                headers: extract_headers(headers)?,
+                http_version: extract_version(py, http_version)?,
+            },
+        )
+    }
+
+    fn repr(&self, py: Python<'_>, class: &str) -> PyResult<String> {
+        repr_fields(
+            class,
+            &[
+                ("status_code", self.status_code.into_pyobject(py)?.as_any()),
+                ("reason", self.reason.bind(py).as_any()),
+                ("headers", self.headers.bind(py).as_any()),
+                ("http_version", self.http_version.bind(py).as_any()),
+            ],
+        )
     }
 }
 
@@ -200,19 +429,22 @@ impl PartialEq for PyResponseValue {
     fn eq(&self, other: &Self) -> bool {
         self.status_code == other.status_code
             && bytes_eq(&self.reason, &other.reason)
-            && tuple_eq(&self.headers, &other.headers)
+            && headers_eq(&self.headers, &other.headers)
             && bytes_eq(&self.http_version, &other.http_version)
     }
 }
 
 impl Eq for PyResponseValue {}
 
-/// A parsed non-final `1xx` response head.
+/// A non-final `1xx` response head.
+///
+/// Construct one as
+/// `InformationalResponse(status_code, headers=None, *, reason=None, http_version=None)`.
 ///
 /// Attributes:
 ///     status_code (int): Informational status code.
 ///     reason (bytes): Reason-phrase bytes.
-///     headers (tuple[tuple[bytes, bytes], ...]): Ordered `(name, value)` byte pairs.
+///     headers (Headers): Ordered header fields.
 ///     http_version (bytes): Peer HTTP version bytes.
 #[pyclass(
     name = "InformationalResponse",
@@ -234,6 +466,33 @@ impl Eq for PyInformationalResponse {}
 
 #[pymethods]
 impl PyInformationalResponse {
+    #[new]
+    #[pyo3(signature = (status_code, headers = None, *, reason = None, http_version = None))]
+    fn new(
+        py: Python<'_>,
+        status_code: u16,
+        headers: Option<&Bound<'_, PyAny>>,
+        reason: Option<&Bound<'_, PyAny>>,
+        http_version: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let value = PyResponseValue::new(py, status_code, headers, reason, http_version)?;
+        if value.status_code >= 200 {
+            return Err(PyValueError::new_err(
+                "InformationalResponse requires a 1xx status",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    #[classattr]
+    fn __match_args__() -> (&'static str, &'static str) {
+        ("status_code", "headers")
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        self.0.repr(py, "InformationalResponse")
+    }
+
     /// The informational status code.
     #[getter]
     fn status_code(&self) -> u16 {
@@ -244,9 +503,9 @@ impl PyInformationalResponse {
     fn reason(&self, py: Python<'_>) -> Py<PyBytes> {
         self.0.reason.clone_ref(py)
     }
-    /// Ordered `(name, value)` byte pairs.
+    /// Ordered header fields.
     #[getter]
-    fn headers(&self, py: Python<'_>) -> Py<PyTuple> {
+    fn headers(&self, py: Python<'_>) -> Py<PyHeaders> {
         self.0.headers.clone_ref(py)
     }
     /// The peer HTTP version as bytes.
@@ -256,12 +515,15 @@ impl PyInformationalResponse {
     }
 }
 
-/// A parsed final response head.
+/// A final response head.
+///
+/// Construct one as
+/// `Response(status_code, headers=None, *, reason=None, http_version=None)`.
 ///
 /// Attributes:
 ///     status_code (int): Final status code.
 ///     reason (bytes): Reason-phrase bytes.
-///     headers (tuple[tuple[bytes, bytes], ...]): Ordered `(name, value)` byte pairs.
+///     headers (Headers): Ordered header fields.
 ///     http_version (bytes): Peer HTTP version bytes.
 #[pyclass(name = "Response", module = "h11r", frozen, eq, skip_from_py_object)]
 #[derive(Debug)]
@@ -277,6 +539,33 @@ impl Eq for PyResponse {}
 
 #[pymethods]
 impl PyResponse {
+    #[new]
+    #[pyo3(signature = (status_code, headers = None, *, reason = None, http_version = None))]
+    fn new(
+        py: Python<'_>,
+        status_code: u16,
+        headers: Option<&Bound<'_, PyAny>>,
+        reason: Option<&Bound<'_, PyAny>>,
+        http_version: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let value = PyResponseValue::new(py, status_code, headers, reason, http_version)?;
+        if value.status_code < 200 {
+            return Err(PyValueError::new_err(
+                "Response requires a final, non-1xx status",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    #[classattr]
+    fn __match_args__() -> (&'static str, &'static str) {
+        ("status_code", "headers")
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        self.0.repr(py, "Response")
+    }
+
     /// The final status code.
     #[getter]
     fn status_code(&self) -> u16 {
@@ -287,9 +576,9 @@ impl PyResponse {
     fn reason(&self, py: Python<'_>) -> Py<PyBytes> {
         self.0.reason.clone_ref(py)
     }
-    /// Ordered `(name, value)` byte pairs.
+    /// Ordered header fields.
     #[getter]
-    fn headers(&self, py: Python<'_>) -> Py<PyTuple> {
+    fn headers(&self, py: Python<'_>) -> Py<PyHeaders> {
         self.0.headers.clone_ref(py)
     }
     /// The peer HTTP version as bytes.
@@ -302,7 +591,8 @@ impl PyResponse {
 /// A decoded piece of message body.
 ///
 /// `chunk_start` and `chunk_end` preserve HTTP chunk boundaries when the peer
-/// used chunked transfer coding.
+/// used chunked transfer coding. Construct one as
+/// `Data(data, *, chunk_start=False, chunk_end=False)`.
 ///
 /// Attributes:
 ///     data (bytes): Decoded body bytes.
@@ -336,14 +626,53 @@ impl PartialEq for PyData {
 
 impl Eq for PyData {}
 
+#[pymethods]
+impl PyData {
+    #[new]
+    #[pyo3(signature = (data, *, chunk_start = false, chunk_end = false))]
+    fn new(
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        chunk_start: bool,
+        chunk_end: bool,
+    ) -> PyResult<Self> {
+        let data = with_buffer_bytes(data, |data| match data {
+            BufferBytes::Borrowed(bytes) => PyBytes::new(py, bytes),
+            BufferBytes::Cells(cells) => {
+                PyBytes::new(py, &cells.iter().map(ReadOnlyCell::get).collect::<Vec<_>>())
+            }
+        })?;
+        Ok(Self {
+            data: data.unbind(),
+            chunk_start,
+            chunk_end,
+        })
+    }
+
+    #[classattr]
+    fn __match_args__() -> (&'static str,) {
+        ("data",)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        repr_fields(
+            "Data",
+            &[
+                ("data", self.data.bind(py).as_any()),
+                ("chunk_start", PyBool::new(py, self.chunk_start).as_any()),
+                ("chunk_end", PyBool::new(py, self.chunk_end).as_any()),
+            ],
+        )
+    }
+}
+
 /// The end of one HTTP message, optionally carrying trailer fields.
 ///
 /// `EndOfMessage()` creates an event without trailers. Pass an iterable of
 /// `(name, value)` pairs to construct one with trailers.
 ///
 /// Attributes:
-///     trailers (tuple[tuple[bytes, bytes], ...]): Ordered trailer `(name, value)`
-///         byte pairs.
+///     trailers (Headers): Ordered trailer fields.
 #[pyclass(
     name = "EndOfMessage",
     module = "h11r",
@@ -354,13 +683,13 @@ impl Eq for PyData {}
 )]
 #[derive(Debug)]
 struct PyEndOfMessage {
-    /// Ordered trailer `(name, value)` byte pairs.
-    trailers: Py<PyTuple>,
+    /// Ordered trailer fields.
+    trailers: Py<PyHeaders>,
 }
 
 impl PartialEq for PyEndOfMessage {
     fn eq(&self, other: &Self) -> bool {
-        tuple_eq(&self.trailers, &other.trailers)
+        headers_eq(&self.trailers, &other.trailers)
     }
 }
 
@@ -371,10 +700,21 @@ impl PyEndOfMessage {
     #[new]
     #[pyo3(signature = (trailers = None))]
     fn new(py: Python<'_>, trailers: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-        let trailers = extract_headers(py, trailers)?;
         Ok(Self {
-            trailers: py_headers(py, &trailers)?.unbind(),
+            trailers: PyHeaders::new_py(py, extract_headers(trailers)?)?,
         })
+    }
+
+    #[classattr]
+    fn __match_args__() -> (&'static str,) {
+        ("trailers",)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        repr_fields(
+            "EndOfMessage",
+            &[("trailers", self.trailers.bind(py).as_any())],
+        )
     }
 }
 
@@ -394,6 +734,10 @@ impl PyConnectionClosed {
     #[new]
     fn new() -> Self {
         Self
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "ConnectionClosed()"
     }
 }
 
@@ -415,15 +759,19 @@ impl PyConnectionClosed {
 /// ```
 ///
 /// `role` selects the local client or server endpoint. `max_head_bytes`
-/// defaults to 65,536 and limits each inbound head or trailer section,
-/// including an incomplete chunk-size line. `max_header_count` defaults to 100
-/// and limits each inbound head or trailer section's field count.
+/// defaults to 65,536 and limits each inbound head or trailer section, each
+/// chunk-size line, and the total chunk-extension bytes of one message.
+/// `max_header_count` defaults to 100 and limits each inbound head or trailer
+/// section's field count.
 ///
 /// Attributes:
 ///     local_state (State): The local protocol actor's lifecycle state.
 ///     peer_state (State): The peer protocol actor's lifecycle state.
 ///     peer_http_version (bytes | None): The most recently parsed peer HTTP
 ///         version, if any.
+///     keep_alive (bool): Whether HTTP may continue on this connection after the
+///         current exchange. It becomes false once either actor requires
+///         closure, closes, fails, or switches protocols.
 ///     client_is_waiting_for_100_continue (bool): Whether the client is waiting
 ///         for `100 Continue`.
 ///     trailing_data (tuple[bytes, bool]): Bytes retained beyond the HTTP
@@ -482,8 +830,14 @@ impl PyConnection {
             .next_event()
             .map_err(|error| remote_error(py, error))?
         {
-            core::NextEvent::NeedData => py_member::<PyReceiveStatus>(py, "NEED_DATA"),
-            core::NextEvent::Paused => py_member::<PyReceiveStatus>(py, "PAUSED"),
+            core::NextEvent::NeedData => {
+                static NEED_DATA: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+                cached_member::<PyReceiveStatus>(py, &NEED_DATA, "NEED_DATA")
+            }
+            core::NextEvent::Paused => {
+                static PAUSED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+                cached_member::<PyReceiveStatus>(py, &PAUSED, "PAUSED")
+            }
             core::NextEvent::Event(event) => event_to_py(py, event),
         }
     }
@@ -497,6 +851,12 @@ impl PyConnection {
     ///         See RFC 9112 Section 3.2.
     ///     headers (Iterable): `(name, value)` pairs. Each item accepts ASCII
     ///         `str`, `bytes`, `bytearray`, or `memoryview`.
+    ///     body (bytes | bytearray | memoryview | None): The complete request
+    ///         content. When given, the returned bytes also contain the body
+    ///         and the end of the message, and `Content-Length` is added if no
+    ///         framing field is present and the body is non-empty or the
+    ///         method is `POST`, `PUT`, or `PATCH`. Omit it to stream
+    ///         the body with `send_data()` and `end_of_message()`.
     ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
     ///         (default) or `b"1.0"`.
     ///
@@ -508,26 +868,30 @@ impl PyConnection {
     ///         text or a buffer.
     ///     ValueError: If text is non-ASCII, the method is invalid, or the HTTP
     ///         version is unsupported.
-    ///     LocalProtocolError: If the head or current state is invalid.
-    #[pyo3(signature = (method, target, headers, *, http_version = None))]
+    ///     LocalProtocolError: If the head, body framing, or current state is
+    ///         invalid. The connection is unchanged after this error.
+    #[pyo3(signature = (method, target, headers, *, body = None, http_version = None))]
     fn send_request(
         &mut self,
         py: Python<'_>,
         method: &Bound<'_, PyAny>,
         target: &Bound<'_, PyAny>,
         headers: &Bound<'_, PyAny>,
+        body: Option<&Bound<'_, PyAny>>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
         let request = core::Request {
             method: extract_method(method)?,
             target: text_or_buffer(py, target)?,
-            headers: extract_headers(py, Some(headers))?,
+            headers: extract_headers(Some(headers))?,
             http_version: extract_version(py, http_version)?,
         };
-        self.0
-            .send_request(&request)
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        match body {
+            None => self.0.send_request(&request),
+            Some(body) => with_buffer(body, |body| self.0.send_request_with_body(request, body))?,
+        }
+        .map(|bytes| PyBytes::new(py, &bytes).unbind())
+        .map_err(local_error)
     }
 
     /// Serialize an informational response head.
@@ -561,7 +925,7 @@ impl PyConnection {
         let response = core::InformationalResponse {
             status: status(status_code)?,
             reason: optional_bytes(py, reason)?,
-            headers: extract_headers(py, headers)?,
+            headers: extract_headers(headers)?,
             http_version: extract_version(py, http_version)?,
         };
         self.0
@@ -570,12 +934,18 @@ impl PyConnection {
             .map_err(local_error)
     }
 
-    /// Serialize a final response head.
+    /// Serialize a final response head, or a complete response with `body`.
     ///
     /// Args:
     ///     status_code (int): A status in the range 200 through 599.
     ///     headers (Iterable | None): Optional `(name, value)` pairs. Each item
     ///         accepts ASCII `str`, `bytes`, `bytearray`, or `memoryview`.
+    ///     body (bytes | bytearray | memoryview | None): The complete response
+    ///         content. When given, the returned bytes also contain the body
+    ///         and the end of the message, and `Content-Length` is added if no
+    ///         framing field is present and the response may carry content.
+    ///         Omit it to stream the body with `send_data()` and
+    ///         `end_of_message()`.
     ///     reason (str | bytes | bytearray | memoryview | None): Optional ASCII
     ///         reason phrase.
     ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
@@ -588,26 +958,30 @@ impl PyConnection {
     ///     TypeError: If a header is not a two-item tuple or an input is not
     ///         text or a buffer.
     ///     ValueError: If the status, text, or HTTP version is invalid.
-    ///     LocalProtocolError: If the response or current state is invalid.
-    #[pyo3(signature = (status_code, headers = None, *, reason = None, http_version = None))]
+    ///     LocalProtocolError: If the response, body framing, or current state
+    ///         is invalid. The connection is unchanged after this error.
+    #[pyo3(signature = (status_code, headers = None, *, body = None, reason = None, http_version = None))]
     fn send_response(
         &mut self,
         py: Python<'_>,
         status_code: u16,
         headers: Option<&Bound<'_, PyAny>>,
+        body: Option<&Bound<'_, PyAny>>,
         reason: Option<&Bound<'_, PyAny>>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
         let response = core::Response {
             status: status(status_code)?,
             reason: optional_bytes(py, reason)?,
-            headers: extract_headers(py, headers)?,
+            headers: extract_headers(headers)?,
             http_version: extract_version(py, http_version)?,
         };
-        self.0
-            .send_response(&response)
-            .map(|bytes| PyBytes::new(py, &bytes).unbind())
-            .map_err(local_error)
+        match body {
+            None => self.0.send_response(&response),
+            Some(body) => with_buffer(body, |body| self.0.send_response_with_body(response, body))?,
+        }
+        .map(|bytes| PyBytes::new(py, &bytes).unbind())
+        .map_err(local_error)
     }
 
     /// Serialize body data into one bytes object.
@@ -700,7 +1074,7 @@ impl PyConnection {
         py: Python<'_>,
         trailers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
-        let trailers = extract_headers(py, trailers)?;
+        let trailers = extract_headers(trailers)?;
         self.0
             .end_of_message(&trailers)
             .map(|bytes| PyBytes::new(py, &bytes).unbind())
@@ -740,6 +1114,11 @@ impl PyConnection {
         self.0
             .peer_http_version()
             .map(|version| py_version(py, version))
+    }
+    /// Whether HTTP may continue on this connection after the current exchange.
+    #[getter]
+    fn keep_alive(&self) -> bool {
+        self.0.keep_alive()
     }
     /// Whether the client is waiting for `100 Continue`.
     #[getter]
@@ -782,7 +1161,7 @@ fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py<PyAny>> {
         core::Event::EndOfMessage(value) => Py::new(
             py,
             PyEndOfMessage {
-                trailers: py_headers(py, &value.trailers)?.unbind(),
+                trailers: PyHeaders::new_py(py, value.trailers)?,
             },
         )?
         .into_any(),
@@ -790,15 +1169,24 @@ fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py<PyAny>> {
     })
 }
 
+/// Formats `Class(name=value, ...)` from each value's Python `repr()`.
+fn repr_fields(class: &str, fields: &[(&str, &Bound<'_, PyAny>)]) -> PyResult<String> {
+    let fields = fields
+        .iter()
+        .map(|(name, value)| Ok(format!("{name}={}", value.repr()?)))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(format!("{class}({})", fields.join(", ")))
+}
+
 fn bytes_eq(left: &Py<PyBytes>, right: &Py<PyBytes>) -> bool {
     Python::attach(|py| left.bind(py).as_bytes() == right.bind(py).as_bytes())
 }
 
-fn tuple_eq(left: &Py<PyTuple>, right: &Py<PyTuple>) -> bool {
-    Python::attach(|py| left.bind(py).eq(right.bind(py)).unwrap_or(false))
+fn headers_eq(left: &Py<PyHeaders>, right: &Py<PyHeaders>) -> bool {
+    left.get().fields == right.get().fields
 }
 
-fn py_headers<'py>(py: Python<'py>, headers: &[core::Header]) -> PyResult<Bound<'py, PyTuple>> {
+fn py_headers<'py>(py: Python<'py>, headers: &core::Headers) -> PyResult<Bound<'py, PyTuple>> {
     PyTuple::new(
         py,
         headers
@@ -807,31 +1195,35 @@ fn py_headers<'py>(py: Python<'py>, headers: &[core::Header]) -> PyResult<Bound<
     )
 }
 
-fn extract_headers(
-    py: Python<'_>,
-    value: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Vec<core::Header>> {
+fn extract_headers(value: Option<&Bound<'_, PyAny>>) -> PyResult<core::Headers> {
     let Some(value) = value else {
-        return Ok(Vec::new());
+        return Ok(core::Headers::new());
     };
-    value
-        .try_iter()?
-        .map(|item| {
-            let item = item?;
-            let pair = item
-                .cast::<PyTuple>()
-                .map_err(|_| PyTypeError::new_err("each header must be a 2-tuple"))?;
-            if pair.len() != 2 {
-                return Err(PyTypeError::new_err(
-                    "each header must contain name and value",
-                ));
-            }
-            Ok((
-                text_or_buffer(py, &pair.get_item(0)?)?,
-                text_or_buffer(py, &pair.get_item(1)?)?,
-            ))
-        })
-        .collect()
+    if let Ok(headers) = value.cast::<PyHeaders>() {
+        return Ok(headers.get().fields.clone());
+    }
+    // Sized for typical fields so a request's headers rarely regrow.
+    let fields = value.len().unwrap_or(0);
+    let mut headers = core::Headers::with_capacity(fields, fields * 64);
+    // A plain loop: `collect()` would ask the Python iterator for a length
+    // hint, which costs a Python-level call per header section.
+    for item in value.try_iter()? {
+        let item = item?;
+        let pair = item
+            .cast::<PyTuple>()
+            .map_err(|_| PyTypeError::new_err("each header must be a 2-tuple"))?;
+        if pair.len() != 2 {
+            return Err(PyTypeError::new_err(
+                "each header must contain name and value",
+            ));
+        }
+        with_text_or_buffer(&*pair.get_borrowed_item(0)?, |name| {
+            with_text_or_buffer(&*pair.get_borrowed_item(1)?, |value| {
+                headers.push(name, value)
+            })
+        })??;
+    }
+    Ok(headers)
 }
 
 enum BufferBytes<'a> {
@@ -893,18 +1285,34 @@ fn body_nbytes(value: &Bound<'_, PyAny>) -> PyResult<usize> {
 }
 
 fn text_or_buffer(_py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    with_text_or_buffer(value, <[u8]>::to_vec)
+}
+
+/// Runs `consume` over the bytes of an ASCII `str` or a buffer-protocol
+/// object, borrowing them when Python allows it.
+fn with_text_or_buffer<R>(
+    value: &Bound<'_, PyAny>,
+    consume: impl FnOnce(&[u8]) -> R,
+) -> PyResult<R> {
     if let Ok(text) = value.cast::<PyString>() {
         let text = text.to_str()?;
         if !text.is_ascii() {
             return Err(PyValueError::new_err("HTTP str inputs must be ASCII"));
         }
-        Ok(text.as_bytes().to_vec())
+        Ok(consume(text.as_bytes()))
     } else {
-        with_buffer_bytes(value, |data| match data {
-            BufferBytes::Borrowed(bytes) => bytes.to_vec(),
-            BufferBytes::Cells(cells) => cells.iter().map(ReadOnlyCell::get).collect(),
-        })
+        with_buffer(value, consume)
     }
+}
+
+/// Runs `consume` over the bytes of a buffer-protocol object.
+fn with_buffer<R>(value: &Bound<'_, PyAny>, consume: impl FnOnce(&[u8]) -> R) -> PyResult<R> {
+    with_buffer_bytes(value, |data| match data {
+        BufferBytes::Borrowed(bytes) => consume(bytes),
+        BufferBytes::Cells(cells) => {
+            consume(&cells.iter().map(ReadOnlyCell::get).collect::<Vec<_>>())
+        }
+    })
 }
 
 fn extract_method(value: &Bound<'_, PyAny>) -> PyResult<Method> {
@@ -944,14 +1352,37 @@ fn extract_version(py: Python<'_>, value: Option<&Bound<'_, PyAny>>) -> PyResult
     }
 }
 
+/// Returns a shared `bytes` object for a registered method, or a new one.
+fn py_method(py: Python<'_>, method: &Method) -> Py<PyBytes> {
+    static REGISTERED: [PyOnceLock<Py<PyBytes>>; 9] = [const { PyOnceLock::new() }; 9];
+    let index = match method.as_bytes() {
+        b"GET" => 0,
+        b"HEAD" => 1,
+        b"POST" => 2,
+        b"PUT" => 3,
+        b"DELETE" => 4,
+        b"CONNECT" => 5,
+        b"OPTIONS" => 6,
+        b"TRACE" => 7,
+        b"PATCH" => 8,
+        _ => return PyBytes::new(py, method.as_bytes()).unbind(),
+    };
+    REGISTERED[index]
+        .get_or_init(py, || PyBytes::new(py, method.as_bytes()).unbind())
+        .clone_ref(py)
+}
+
+/// Returns a shared `bytes` object for each supported version.
 fn py_version(py: Python<'_>, value: core::Version) -> Bound<'_, PyBytes> {
-    PyBytes::new(
-        py,
-        match value {
-            core::Version::Http10 => b"1.0",
-            core::Version::Http11 => b"1.1",
-        },
-    )
+    static HTTP10: PyOnceLock<Py<PyBytes>> = PyOnceLock::new();
+    static HTTP11: PyOnceLock<Py<PyBytes>> = PyOnceLock::new();
+    let (cell, wire): (&PyOnceLock<Py<PyBytes>>, &[u8]) = match value {
+        core::Version::Http10 => (&HTTP10, b"1.0"),
+        core::Version::Http11 => (&HTTP11, b"1.1"),
+    };
+    cell.get_or_init(py, || PyBytes::new(py, wire).unbind())
+        .bind(py)
+        .clone()
 }
 
 fn status(value: u16) -> PyResult<StatusCode> {
@@ -970,14 +1401,23 @@ fn remote_error(py: Python<'_>, error: core::RemoteProtocolError) -> PyErr {
     exception
 }
 
-fn py_member<T: PyTypeInfo>(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    Ok(py.get_type::<T>().getattr(name)?.unbind())
+/// Returns a class attribute, looking it up once per process.
+fn cached_member<T: PyTypeInfo>(
+    py: Python<'_>,
+    cell: &'static PyOnceLock<Py<PyAny>>,
+    name: &str,
+) -> PyResult<Py<PyAny>> {
+    cell.get_or_try_init(py, || {
+        Ok::<_, PyErr>(py.get_type::<T>().getattr(name)?.unbind())
+    })
+    .map(|member| member.clone_ref(py))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRole>()?;
     module.add_class::<PyState>()?;
     module.add_class::<PyReceiveStatus>()?;
+    module.add_class::<PyHeaders>()?;
     module.add_class::<PyRequest>()?;
     module.add_class::<PyInformationalResponse>()?;
     module.add_class::<PyResponse>()?;

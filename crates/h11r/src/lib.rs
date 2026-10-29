@@ -1,19 +1,16 @@
-//! Sans-I/O HTTP/1.1 library.
-//!
-//! [`Connection`] owns protocol state and buffering but performs no socket I/O.
-//! Pass received bytes to [`Connection::receive_data`], poll [`Event`] values
-//! with [`Connection::next_event`], and write bytes returned by its send methods.
-
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![deny(missing_debug_implementations)]
 
 mod connection;
+mod headers;
 mod method;
 mod state;
 mod status;
 mod wire;
 
 pub use connection::Connection;
+pub use headers::{Headers, HeadersIter};
 pub use method::{InvalidMethod, Method};
 pub use state::{Role, State};
 pub use status::{InvalidStatusCode, StatusCode};
@@ -22,12 +19,6 @@ use std::{error::Error as StdError, fmt};
 
 const DEFAULT_MAX_HEAD_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_HEADER_COUNT: usize = 100;
-
-/// One header field, preserving input order and name casing.
-///
-/// The value is the parsed field value; leading and trailing line whitespace
-/// is excluded as required by RFC 9110 Section 5.5.
-pub type Header = (Vec<u8>, Vec<u8>);
 
 /// HTTP protocol version carried by a request or response head.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +48,7 @@ pub struct Request {
     /// See [RFC 9112 Section 3.2](https://www.rfc-editor.org/rfc/rfc9112.html#section-3.2).
     pub target: Vec<u8>,
     /// Ordered header fields.
-    pub headers: Vec<Header>,
+    pub headers: Headers,
     /// HTTP version.
     pub http_version: Version,
 }
@@ -70,7 +61,7 @@ pub struct Response {
     /// Raw reason-phrase bytes, including any legal SP, HTAB, or obs-text.
     pub reason: Vec<u8>,
     /// Ordered header fields.
-    pub headers: Vec<Header>,
+    pub headers: Headers,
     /// HTTP version.
     pub http_version: Version,
 }
@@ -107,7 +98,7 @@ pub struct DataParts<T> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EndOfMessage {
     /// Ordered trailer fields.
-    pub trailers: Vec<Header>,
+    pub trailers: Headers,
 }
 
 /// A semantic event decoded from peer bytes.
@@ -145,7 +136,8 @@ pub enum NextEvent<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     /// Maximum bytes through the terminating empty line of a head or trailers.
-    /// This also bounds an incomplete chunk-size line.
+    /// This also bounds each chunk-size line and the total chunk-extension
+    /// bytes of one message.
     max_head_bytes: usize,
     /// Maximum number of header or trailer fields.
     max_header_count: usize,

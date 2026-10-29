@@ -10,6 +10,7 @@ def test_public_import_surface() -> None:
         "ConnectionClosed",
         "Data",
         "EndOfMessage",
+        "Headers",
         "InformationalResponse",
         "LocalProtocolError",
         "ProtocolError",

@@ -83,9 +83,18 @@ An HTTP/1.1 keep-alive connection can carry multiple request/response cycles.
 Call `start_next_cycle()` only after the request and response for the current
 cycle are complete and reuse remains legal.
 
+After each exchange, check `keep_alive`. When it is false, close the transport
+instead of calling `start_next_cycle()`. It becomes false when either message
+asks to close, either message uses HTTP/1.0, a protocol error occurs, or HTTP
+hands the connection to another protocol.
+
 Pipelined bytes may already be buffered. `h11r` returns `PAUSED` until the
 current response is complete, preserving request and response order. After
 `start_next_cycle()`, the next buffered request becomes available.
+
+A client never pipelines, so bytes that arrive after a complete response belong
+to no request. A client-role `start_next_cycle()` refuses to reuse such a
+connection, and `keep_alive` becomes false.
 
 ## Errors and resource limits
 
@@ -93,8 +102,10 @@ current response is complete, preserving request and response order. After
 for the current state or framing.
 
 `RemoteProtocolError` means peer input violated HTTP syntax, framing, state, or
-an inbound limit. Servers can inspect `suggested_status_code` when constructing
-an error response.
+an inbound limit. A server can still send one final response, using
+`suggested_status_code` when it is not `None`, and should then close the
+transport. `h11r` marks that response with `Connection: close`, as it does any
+response sent before the request body has been fully received.
 
 Each connection applies independent inbound limits:
 
@@ -106,9 +117,13 @@ connection = h11r.Connection(
 )
 ```
 
-These limits cover request or response heads and trailer sections. Application
-body limits, timeouts, concurrency limits, and transport back-pressure remain
-the caller's responsibility.
+These limits cover request or response heads, trailer sections, each
+chunk-size line, and the total chunk-extension bytes of one message. A section
+that is invalid within the byte limit fails with the same error however the
+transport splits it. Application body limits, timeouts, concurrency limits, and
+transport back-pressure remain the caller's responsibility. Bytes received
+while `next_event()` returns `PAUSED` also stay buffered until the caller acts
+on them.
 
 With those ownership and ordering rules in place, continue to
 [Build a transport adapter](integration.md) and apply them to an existing

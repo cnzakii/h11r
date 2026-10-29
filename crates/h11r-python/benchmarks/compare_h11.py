@@ -1,4 +1,4 @@
-"""Compare steady-state HTTP/1 scenarios through the public Python APIs."""
+"""Compare steady-state HTTP/1 scenarios through the public Python APIs.\n\nEach scenario carries the header fields of a browser calling a JSON API, and\nthe server answers with typical response fields and a JSON body.\n"""
 
 from __future__ import annotations
 
@@ -11,33 +11,76 @@ import h11 as reference
 import h11r as candidate
 import pyperf
 
-SMALL_GET = b"GET /items?q=1 HTTP/1.1\r\nHost: example.test\r\n\r\n"
-FIXED_BODY = b"x" * 1024
-FIXED_POST = (
-    b"POST /items HTTP/1.1\r\n"
-    b"Host: example.test\r\n"
-    b"Content-Length: 1024\r\n\r\n" + FIXED_BODY
+# Field sets modeled on a browser calling a JSON API and its server's reply.
+API_REQUEST_HEADERS = (
+    (b"Host", b"api.example.test"),
+    (
+        b"User-Agent",
+        b"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 "
+        b"(KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    ),
+    (b"Accept", b"application/json, text/plain, */*"),
+    (b"Accept-Language", b"en-US,en;q=0.9"),
+    (b"Accept-Encoding", b"gzip, deflate, br"),
+    (b"Referer", b"https://app.example.test/dashboard"),
+    (b"Origin", b"https://app.example.test"),
+    (b"Cookie", b"session=4f1c2b7e9a0d4c3b8e6f5a1d2c3b4a59; theme=dark"),
+    (b"Sec-Fetch-Mode", b"cors"),
+    (b"Connection", b"keep-alive"),
+)
+JSON_BODY = (
+    b'{"items":['
+    + b",".join(b'{"id":%d,"name":"item-%d"}' % (index, index) for index in range(20))
+    + b"]}"
+)
+API_RESPONSE_HEADERS = (
+    (b"Content-Type", b"application/json"),
+    (b"Content-Length", b"%d" % len(JSON_BODY)),
+    (b"Date", b"Wed, 29 Oct 2026 12:00:00 GMT"),
+    (b"Server", b"example"),
+    (b"Cache-Control", b"no-store"),
+    (b"Vary", b"Origin, Accept-Encoding"),
+    (b"Access-Control-Allow-Origin", b"https://app.example.test"),
+)
+
+
+def head(start_line: bytes, fields: tuple[tuple[bytes, bytes], ...]) -> bytes:
+    lines = (start_line, *(name + b": " + value for name, value in fields))
+    return b"\r\n".join(lines) + b"\r\n\r\n"
+
+
+API_GET = head(b"GET /api/v1/items?page=2 HTTP/1.1", API_REQUEST_HEADERS)
+POST_BODY = b'{"name":"' + b"x" * 1012 + b'"}'
+JSON_POST = (
+    head(
+        b"POST /api/v1/items HTTP/1.1",
+        (
+            *API_REQUEST_HEADERS,
+            (b"Content-Type", b"application/json"),
+            (b"Content-Length", b"%d" % len(POST_BODY)),
+        ),
+    )
+    + POST_BODY
 )
 FRAGMENTED_GET = tuple(
-    SMALL_GET[index : index + 16] for index in range(0, len(SMALL_GET), 16)
+    API_GET[index : index + 16] for index in range(0, len(API_GET), 16)
 )
 CHUNK = b"x" * 4096
-CHUNKED_STREAM = (
-    b"POST /upload HTTP/1.1\r\n"
-    b"Host: example.test\r\n"
-    b"Transfer-Encoding: chunked\r\n\r\n",
+CHUNKED_UPLOAD = (
+    head(
+        b"POST /api/v1/uploads HTTP/1.1",
+        (*API_REQUEST_HEADERS, (b"Transfer-Encoding", b"chunked")),
+    ),
     *(b"1000\r\n" + CHUNK + b"\r\n" for _ in range(16)),
     b"0\r\nDigest: ok\r\n\r\n",
 )
-NO_CONTENT = b"HTTP/1.1 204 No Content\r\n\r\n"
-PING_REQUEST = b"GET /ping HTTP/1.1\r\nHost: example.test\r\n\r\n"
-PING_RESPONSE = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+API_RESPONSE = head(b"HTTP/1.1 200 OK", API_RESPONSE_HEADERS) + JSON_BODY
 
 SCENARIOS = (
-    ("small_get", (SMALL_GET,)),
-    ("fixed_body_1k", (FIXED_POST,)),
+    ("api_get", (API_GET,)),
+    ("json_post_1k", (JSON_POST,)),
     ("fragmented_get_16b", FRAGMENTED_GET),
-    ("chunked_stream_64k", CHUNKED_STREAM),
+    ("chunked_upload_64k", CHUNKED_UPLOAD),
 )
 
 
@@ -48,7 +91,7 @@ class CandidateServerCycle:
         self.connection = candidate.Connection(candidate.Role.SERVER)
         self.parts = parts
 
-    def __call__(self) -> tuple[bytes, int, int, object, bytes, bytes]:
+    def __call__(self) -> tuple[bytes, int, int, object, bytes]:
         method = b""
         event_count = body_bytes = 0
         last_event: object = candidate.ReceiveStatus.NEED_DATA
@@ -69,10 +112,13 @@ class CandidateServerCycle:
                 elif isinstance(event, candidate.Data):
                     body_bytes += len(event.data)
 
-        head = self.connection.send_response(204, reason=b"No Content")
-        tail = self.connection.end_of_message()
+        response = (
+            self.connection.send_response(200, API_RESPONSE_HEADERS, reason=b"OK")
+            + self.connection.send_data(JSON_BODY)
+            + self.connection.end_of_message()
+        )
         self.connection.start_next_cycle()
-        return method, event_count, body_bytes, last_event, head, tail
+        return method, event_count, body_bytes, last_event, response
 
 
 class H11ServerCycle:
@@ -82,7 +128,7 @@ class H11ServerCycle:
         self.connection = reference.Connection(reference.SERVER)
         self.parts = parts
 
-    def __call__(self) -> tuple[bytes, int, int, object, bytes, bytes]:
+    def __call__(self) -> tuple[bytes, int, int, object, bytes]:
         method = b""
         event_count = body_bytes = 0
         last_event: object = reference.NEED_DATA
@@ -100,12 +146,17 @@ class H11ServerCycle:
                 elif isinstance(event, reference.Data):
                     body_bytes += len(event.data)
 
-        head = self.connection.send(
-            reference.Response(status_code=204, headers=[], reason=b"No Content")
+        response = (
+            self.connection.send(
+                reference.Response(
+                    status_code=200, headers=API_RESPONSE_HEADERS, reason=b"OK"
+                )
+            )
+            + self.connection.send(reference.Data(data=JSON_BODY))
+            + self.connection.send(reference.EndOfMessage())
         )
-        tail = self.connection.send(reference.EndOfMessage())
         self.connection.start_next_cycle()
-        return method, event_count, body_bytes, last_event, head, tail
+        return method, event_count, body_bytes, last_event, response
 
 
 class CandidateRoundTrip:
@@ -117,7 +168,9 @@ class CandidateRoundTrip:
 
     def __call__(self) -> tuple[bytes, bytes, object, object]:
         request_wire = (
-            self.client.send_request(b"GET", b"/ping", [(b"Host", b"example.test")])
+            self.client.send_request(
+                b"GET", b"/api/v1/items?page=2", API_REQUEST_HEADERS
+            )
             + self.client.end_of_message()
         )
         self.server.receive_data(request_wire)
@@ -125,8 +178,8 @@ class CandidateRoundTrip:
         request_end = self.server.next_event()
 
         response_wire = (
-            self.server.send_response(200, [(b"Content-Length", b"2")], reason=b"OK")
-            + self.server.send_data(b"OK")
+            self.server.send_response(200, API_RESPONSE_HEADERS, reason=b"OK")
+            + self.server.send_data(JSON_BODY)
             + self.server.end_of_message()
         )
         self.client.receive_data(response_wire)
@@ -150,8 +203,8 @@ class H11RoundTrip:
         request_wire = self.client.send(
             reference.Request(
                 method=b"GET",
-                target=b"/ping",
-                headers=[(b"Host", b"example.test")],
+                target=b"/api/v1/items?page=2",
+                headers=API_REQUEST_HEADERS,
             )
         ) + self.client.send(reference.EndOfMessage())
         self.server.receive_data(request_wire)
@@ -161,12 +214,10 @@ class H11RoundTrip:
         response_wire = (
             self.server.send(
                 reference.Response(
-                    status_code=200,
-                    headers=[(b"Content-Length", b"2")],
-                    reason=b"OK",
+                    status_code=200, headers=API_RESPONSE_HEADERS, reason=b"OK"
                 )
             )
-            + self.server.send(reference.Data(data=b"OK"))
+            + self.server.send(reference.Data(data=JSON_BODY))
             + self.server.send(reference.EndOfMessage())
         )
         self.client.receive_data(response_wire)
@@ -190,23 +241,23 @@ def trailers(event: object) -> tuple[tuple[bytes, bytes], ...]:
 
 def check_workloads() -> None:
     expected = {
-        "small_get": (b"GET", 2, 0, ()),
-        "fixed_body_1k": (b"POST", 3, 1024, ()),
+        "api_get": (b"GET", 2, 0, ()),
+        "json_post_1k": (b"POST", 3, len(POST_BODY), ()),
         "fragmented_get_16b": (b"GET", 2, 0, ()),
-        "chunked_stream_64k": (b"POST", 18, 64 * 1024, ((b"digest", b"ok"),)),
+        "chunked_upload_64k": (b"POST", 18, 64 * 1024, ((b"digest", b"ok"),)),
     }
     for name, parts in SCENARIOS:
         for workload in (CandidateServerCycle(parts), H11ServerCycle(parts)):
             for _ in range(2):
-                method, count, size, end, head, tail = workload()
+                method, count, size, end, response = workload()
                 assert (method, count, size, trailers(end)) == expected[name]
-                assert head + tail == NO_CONTENT
+                assert response == API_RESPONSE
 
     for workload in (CandidateRoundTrip(), H11RoundTrip()):
         for _ in range(2):
             request, response, request_end, response_end = workload()
-            assert request == PING_REQUEST
-            assert response == PING_RESPONSE
+            assert request == API_GET
+            assert response == API_RESPONSE
             assert trailers(request_end) == trailers(response_end) == ()
 
 

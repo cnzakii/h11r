@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import runpy
 from pathlib import Path
 
 import h11r
 import pytest
 
+ROOT = Path(__file__).parents[3]
 EXAMPLES = [
     ("first_client.py", "client received 200 with b'Hello from h11r!\\n'"),
     ("round_trip.py", "connection is ready for another request"),
@@ -37,7 +39,7 @@ def test_python_example_runs(
     expected_output: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    example = Path(__file__).parents[3] / "examples" / "python" / filename
+    example = ROOT / "examples" / "python" / filename
 
     runpy.run_path(str(example), run_name="__main__")
 
@@ -82,7 +84,7 @@ async def receive_final_response(
 
 
 def test_asyncio_server_runs_complete_connection_flow() -> None:
-    example = Path(__file__).parents[3] / "examples" / "python" / "asyncio_server.py"
+    example = ROOT / "examples" / "python" / "asyncio_server.py"
     namespace = runpy.run_path(str(example))
     handle_connection = namespace["handle_connection"]
 
@@ -158,6 +160,7 @@ def test_asyncio_server_runs_complete_connection_flow() -> None:
             await bad_writer.drain()
             error_response = await bad_reader.read()
             assert error_response.startswith(b"HTTP/1.1 400 Bad Request\r\n")
+            assert b"\r\nConnection: close\r\n" in error_response
             assert error_response.endswith(b"invalid HTTP request\n")
             bad_writer.close()
             await bad_writer.wait_closed()
@@ -169,7 +172,7 @@ def test_asyncio_server_runs_complete_connection_flow() -> None:
 
 
 def test_websocket_upgrade_accepts_recombined_list_fields() -> None:
-    example = Path(__file__).parents[3] / "examples" / "python" / "websocket_upgrade.py"
+    example = ROOT / "examples" / "python" / "websocket_upgrade.py"
     websocket_accept = runpy.run_path(str(example))["websocket_accept"]
     server = h11r.Connection(h11r.Role.SERVER)
     server.receive_data(
@@ -186,3 +189,27 @@ def test_websocket_upgrade_accepts_recombined_list_fields() -> None:
     request = server.next_event()
     assert isinstance(request, h11r.Request)
     assert websocket_accept(request) == b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
+
+def test_readme_quick_look_prints_its_documented_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    match = re.search(r"```python\n(.*?)```\n\n```text\n(.*?)```", readme, re.S)
+    assert match is not None
+    source, expected_output = match.groups()
+
+    exec(compile(source, "README.md", "exec"), {})
+
+    assert capsys.readouterr().out == expected_output
+
+
+def test_readme_benchmark_table_matches_rendered_results() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    table = (ROOT / "docs" / "assets" / "python-benchmark.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        f"<!-- benchmark-table:start -->\n{table}<!-- benchmark-table:end -->" in readme
+    )

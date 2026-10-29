@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 
@@ -7,9 +8,28 @@ use std::fmt;
 /// non-empty token defined by HTTP semantics and preserves its original bytes.
 /// See [RFC 9110 Section 9.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.1).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Method(Box<[u8]>);
+pub struct Method(Cow<'static, [u8]>);
 
 impl Method {
+    /// `GET` ([RFC 9110 Section 9.3.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.1)).
+    pub const GET: Self = Self(Cow::Borrowed(b"GET"));
+    /// `HEAD` ([RFC 9110 Section 9.3.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.2)).
+    pub const HEAD: Self = Self(Cow::Borrowed(b"HEAD"));
+    /// `POST` ([RFC 9110 Section 9.3.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.3)).
+    pub const POST: Self = Self(Cow::Borrowed(b"POST"));
+    /// `PUT` ([RFC 9110 Section 9.3.4](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.4)).
+    pub const PUT: Self = Self(Cow::Borrowed(b"PUT"));
+    /// `DELETE` ([RFC 9110 Section 9.3.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.5)).
+    pub const DELETE: Self = Self(Cow::Borrowed(b"DELETE"));
+    /// `CONNECT` ([RFC 9110 Section 9.3.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6)).
+    pub const CONNECT: Self = Self(Cow::Borrowed(b"CONNECT"));
+    /// `OPTIONS` ([RFC 9110 Section 9.3.7](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.7)).
+    pub const OPTIONS: Self = Self(Cow::Borrowed(b"OPTIONS"));
+    /// `TRACE` ([RFC 9110 Section 9.3.8](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.8)).
+    pub const TRACE: Self = Self(Cow::Borrowed(b"TRACE"));
+    /// `PATCH` ([RFC 5789](https://www.rfc-editor.org/rfc/rfc5789.html)).
+    pub const PATCH: Self = Self(Cow::Borrowed(b"PATCH"));
+
     /// Validates and copies an HTTP method token.
     ///
     /// # Errors
@@ -21,7 +41,19 @@ impl Method {
             return Err(InvalidMethod);
         }
 
-        Ok(Self(value.into()))
+        // Registered methods share static bytes instead of allocating.
+        Ok(match value {
+            b"GET" => Self::GET,
+            b"HEAD" => Self::HEAD,
+            b"POST" => Self::POST,
+            b"PUT" => Self::PUT,
+            b"DELETE" => Self::DELETE,
+            b"CONNECT" => Self::CONNECT,
+            b"OPTIONS" => Self::OPTIONS,
+            b"TRACE" => Self::TRACE,
+            b"PATCH" => Self::PATCH,
+            _ => Self(Cow::Owned(value.to_vec())),
+        })
     }
 
     /// Returns the method token exactly as supplied during construction.
@@ -102,6 +134,7 @@ mod tests {
         let method = Method::from_bytes(&input).expect("valid method");
         input[0] = b'X';
         assert_eq!(method.as_bytes(), b"CUSTOM");
+        assert_eq!(Method::from_bytes(b"GET"), Ok(Method::GET));
     }
 
     #[test]

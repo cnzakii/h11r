@@ -6,7 +6,9 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use h11r::Method;
 use h11r::StatusCode;
-use h11r::{Connection, Event, Header, Limits, NextEvent, Request, Response, Role, State, Version};
+use h11r::{
+    Connection, Event, Headers, Limits, NextEvent, Request, Response, Role, State, Version,
+};
 use std::hint::black_box;
 
 const REQUEST: &[u8] = b"GET /items?q=1 HTTP/1.1\r\n\
@@ -23,11 +25,11 @@ Transfer-Encoding: chunked\r\n\r\n";
 const BODY: &[u8] = &[b'x'; 1024];
 const LARGE_BODY: &[u8] = &[b'x'; 64 * 1024];
 
-fn header(name: &[u8], value: &[u8]) -> Header {
-    (name.to_vec(), value.to_vec())
+fn headers<const COUNT: usize>(fields: [(&[u8], &[u8]); COUNT]) -> Headers {
+    Headers::from(fields)
 }
 
-fn response(status: u16, headers: Vec<Header>) -> Response {
+fn response(status: u16, headers: Headers) -> Response {
     Response {
         status: StatusCode::from_u16(status).unwrap(),
         reason: if status == 204 {
@@ -101,7 +103,7 @@ fn reusable_cycle(connection: &mut Connection, reply: &Response) {
     black_box(connection.next_event().unwrap());
     black_box(connection.next_event().unwrap());
     black_box(connection.send_response(reply).unwrap());
-    black_box(connection.end_of_message(&[]).unwrap());
+    black_box(connection.end_of_message(&Headers::new()).unwrap());
     connection.start_next_cycle().unwrap();
 }
 
@@ -111,10 +113,7 @@ fn client_with_fixed_body() -> Connection {
         .send_request(&Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/upload".to_vec(),
-            headers: vec![
-                header(b"Host", b"example.test"),
-                header(b"Content-Length", b"65536"),
-            ],
+            headers: headers([(b"Host", b"example.test"), (b"Content-Length", b"65536")]),
             http_version: Version::Http11,
         })
         .unwrap();
@@ -129,7 +128,7 @@ fn server_exchange(reply: &Response) -> [Vec<u8>; 3] {
     [
         connection.send_response(reply).unwrap(),
         connection.send_data(BODY).unwrap(),
-        connection.end_of_message(&[]).unwrap(),
+        connection.end_of_message(&Headers::new()).unwrap(),
     ]
 }
 
@@ -181,7 +180,7 @@ fn check_workloads() {
         assert_eq!((requests, ends), (1, 1));
     }
 
-    let no_content = response(204, vec![]);
+    let no_content = response(204, Headers::new());
     let mut reusable = Connection::new(Role::Server, Limits::default());
     reusable_cycle(&mut reusable, &no_content);
     assert_eq!(
@@ -189,7 +188,7 @@ fn check_workloads() {
         (State::Idle, State::Idle)
     );
 
-    let reply = response(200, vec![header(b"Content-Length", b"1024")]);
+    let reply = response(200, headers([(b"Content-Length", b"1024")]));
     let bytes = server_exchange(&reply).concat();
     assert_eq!(
         bytes,
@@ -212,8 +211,8 @@ fn benchmarks(c: &mut Criterion) {
     check_workloads();
     let fixed = fixed_wire();
     let chunked = chunked_wire();
-    let no_content = response(204, vec![]);
-    let reply = response(200, vec![header(b"Content-Length", b"1024")]);
+    let no_content = response(204, Headers::new());
+    let reply = response(200, headers([(b"Content-Length", b"1024")]));
 
     let mut receive = c.benchmark_group("common/receive");
     receive.bench_function("fresh_head", |b| {

@@ -9,11 +9,13 @@ from pathlib import Path
 
 import pyperf
 
+TABLE_START = "<!-- benchmark-table:start -->"
+TABLE_END = "<!-- benchmark-table:end -->"
 SCENARIOS = (
-    ("small_get", "Small GET"),
-    ("fixed_body_1k", "Fixed body · 1 KiB"),
-    ("fragmented_get_16b", "Fragmented GET · 16 B"),
-    ("chunked_stream_64k", "Chunked stream · 64 KiB"),
+    ("api_get", "API GET · 10 fields"),
+    ("json_post_1k", "JSON POST · 1 KiB"),
+    ("fragmented_get_16b", "Fragmented GET · 16 B reads"),
+    ("chunked_upload_64k", "Chunked upload · 64 KiB"),
     ("client_server_round_trip", "Client/server round trip"),
 )
 
@@ -139,11 +141,25 @@ def render_table(rows: list[tuple[str, float, float]], details: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def replace_marked_table(document: str, table: str) -> str:
+    """Return the document with the text between the table markers replaced."""
+    before, start, rest = document.partition(TABLE_START)
+    _, end, after = rest.partition(TABLE_END)
+    if not start or not end:
+        raise ValueError("benchmark table markers not found")
+    return f"{before}{TABLE_START}\n{table}{TABLE_END}{after}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("results", type=Path)
     parser.add_argument("--svg", required=True, type=Path)
     parser.add_argument("--table", type=Path)
+    parser.add_argument(
+        "--readme",
+        type=Path,
+        help="replace the table between the README benchmark markers",
+    )
     args = parser.parse_args()
 
     rows, details = load_results(args.results)
@@ -155,6 +171,11 @@ def main() -> None:
         args.table.write_text(table, encoding="utf-8")
     else:
         print(table, end="")
+    if args.readme:
+        args.readme.write_text(
+            replace_marked_table(args.readme.read_text(encoding="utf-8"), table),
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":

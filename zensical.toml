@@ -1,7 +1,7 @@
 [project]
 # Public site identity.
 site_name = "h11r"
-site_description = "A fast, typed Sans-I/O HTTP/1.1 library for Python."
+site_description = "A fast, typed Sans-I/O HTTP/1.1 engine with a Rust core and Python API."
 site_author = "h11r contributors"
 site_url = "https://h11r.readthedocs.io/"
 copyright = "Copyright &copy; 2026 h11r contributors"
@@ -95,7 +95,7 @@ base_path = [
     "SECURITY.md",
     "LICENSE",
     "examples/python/first_client.py",
-    "target/docs/python-benchmark.md",
+    "docs/assets/python-benchmark.md",
 ]
 check_paths = true
 

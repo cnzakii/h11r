@@ -3,7 +3,7 @@
 
 use h11r::Method;
 use h11r::{
-    Connection, EndOfMessage, Event, Header, Limits, NextEvent, Request, Role, State, Version,
+    Connection, EndOfMessage, Event, Headers, Limits, NextEvent, Request, Role, State, Version,
 };
 
 pub(crate) const MAX_EVENTS: usize = 32;
@@ -36,7 +36,7 @@ pub(crate) fn connection(role: Role, control: u8) -> Connection {
     if role == Role::Client {
         connection.send_request(&client_request(control)).unwrap();
         if control & 0x03 == 3 {
-            connection.end_of_message(&[]).unwrap();
+            connection.end_of_message(&Headers::new()).unwrap();
         }
     }
     connection
@@ -44,20 +44,20 @@ pub(crate) fn connection(role: Role, control: u8) -> Connection {
 
 fn client_request(control: u8) -> Request {
     let (method, headers) = match control & 0x03 {
-        1 => (b"HEAD".as_slice(), vec![header(b"Host", b"example.test")]),
+        1 => (b"HEAD".as_slice(), headers([(b"Host", b"example.test")])),
         2 => (
             b"CONNECT".as_slice(),
-            vec![header(b"Host", b"example.test:443")],
+            headers([(b"Host", b"example.test:443")]),
         ),
         3 => (
             b"GET".as_slice(),
-            vec![
-                header(b"Host", b"example.test"),
-                header(b"Connection", b"upgrade"),
-                header(b"Upgrade", b"next-protocol"),
-            ],
+            headers([
+                (b"Host", b"example.test"),
+                (b"Connection", b"upgrade"),
+                (b"Upgrade", b"next-protocol"),
+            ]),
         ),
-        _ => (b"GET".as_slice(), vec![header(b"Host", b"example.test")]),
+        _ => (b"GET".as_slice(), headers([(b"Host", b"example.test")])),
     };
     Request {
         method: Method::from_bytes(method).unwrap(),
@@ -71,8 +71,8 @@ fn client_request(control: u8) -> Request {
     }
 }
 
-pub(crate) fn header(name: &[u8], value: &[u8]) -> Header {
-    (name.to_vec(), value.to_vec())
+pub(crate) fn headers<const COUNT: usize>(fields: [(&[u8], &[u8]); COUNT]) -> Headers {
+    Headers::from(fields)
 }
 
 #[derive(Debug, Eq, PartialEq)]
