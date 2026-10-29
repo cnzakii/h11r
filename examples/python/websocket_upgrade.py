@@ -14,7 +14,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-from collections.abc import Iterable
 
 import h11r
 from wsproto.connection import Connection as WebSocketConnection
@@ -24,28 +23,21 @@ from wsproto.events import TextMessage
 WEBSOCKET_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-def header_value(headers: Iterable[tuple[bytes, bytes]], name: bytes) -> bytes:
-    """Return one required header value."""
-    values = [value for field, value in headers if field.lower() == name]
+def single_value(head: h11r.Request | h11r.InformationalResponse, name: str) -> bytes:
+    """Return the value of a header field that must appear exactly once."""
+    values = head.headers.get_all(name)
     if len(values) != 1:
-        raise ValueError(f"expected exactly one {name.decode()} header")
+        raise ValueError(f"expected exactly one {name} header")
     return values[0]
 
 
-def contains_token(value: bytes, token: bytes) -> bool:
-    """Match a token inside a comma-separated HTTP field value."""
-    return token in {part.strip().lower() for part in value.split(b",")}
-
-
-def contains_header_token(
-    headers: Iterable[tuple[bytes, bytes]],
-    name: bytes,
-    token: bytes,
+def has_token(
+    head: h11r.Request | h11r.InformationalResponse, name: str, token: bytes
 ) -> bool:
-    """Match a token across every field line with the given name."""
+    """Match a token in a comma-separated field across all of its lines."""
     return any(
-        field.lower() == name and contains_token(value, token)
-        for field, value in headers
+        token in {part.strip().lower() for part in value.split(b",")}
+        for value in head.headers.get_all(name)
     )
 
 
@@ -54,13 +46,11 @@ def websocket_accept(request: h11r.Request) -> bytes:
     if request.method != b"GET" or request.http_version != b"1.1":
         raise ValueError("WebSocket over HTTP/1.1 requires a GET request")
 
-    version = header_value(request.headers, b"sec-websocket-version")
-    key = header_value(request.headers, b"sec-websocket-key")
-    offered_upgrade = contains_header_token(
-        request.headers,
-        b"connection",
-        b"upgrade",
-    ) and contains_header_token(request.headers, b"upgrade", b"websocket")
+    version = single_value(request, "Sec-WebSocket-Version")
+    key = single_value(request, "Sec-WebSocket-Key")
+    offered_upgrade = has_token(request, "Connection", b"upgrade") and has_token(
+        request, "Upgrade", b"websocket"
+    )
 
     if not offered_upgrade:
         raise ValueError("request did not offer a WebSocket upgrade")
@@ -142,13 +132,11 @@ def main() -> None:
     if switch.status_code != 101:
         raise RuntimeError(f"expected status 101, got {switch.status_code}")
     expected_accept = base64.b64encode(hashlib.sha1(key + WEBSOCKET_GUID).digest())
-    if header_value(switch.headers, b"sec-websocket-accept") != expected_accept:
+    if single_value(switch, "Sec-WebSocket-Accept") != expected_accept:
         raise ValueError("server returned an invalid Sec-WebSocket-Accept")
-    if not contains_header_token(
-        switch.headers,
-        b"connection",
-        b"upgrade",
-    ) or not contains_header_token(switch.headers, b"upgrade", b"websocket"):
+    if not has_token(switch, "Connection", b"upgrade") or not has_token(
+        switch, "Upgrade", b"websocket"
+    ):
         raise ValueError("server did not confirm the WebSocket upgrade")
     if boundary is not h11r.ReceiveStatus.PAUSED:
         raise RuntimeError(f"expected switch boundary, got {boundary!r}")

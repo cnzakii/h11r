@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{MAX_EVENTS, assert_message, header};
-use h11r::{Connection, Event, Limits, NextEvent, Request, Response, Role, Version};
+use common::{MAX_EVENTS, assert_message, headers};
+use h11r::{Connection, Event, Headers, Limits, NextEvent, Request, Response, Role, Version};
 use h11r::{Method, StatusCode};
 use libfuzzer_sys::fuzz_target;
 
@@ -47,12 +47,11 @@ fn decode(mut connection: Connection, wire: &[u8], expected_body: &[u8]) {
 
 fn request_round_trip(control: u8, value: &[u8], body: &[u8]) {
     let chunked = control & 1 != 0;
-    let mut headers = vec![
-        header(b"Host", b"example.test"),
-        framing(chunked, body.len()),
-    ];
+    let mut headers = headers([(b"Host", b"example.test")]);
+    let (name, framing_value) = framing(chunked, body.len());
+    headers.push(name, framing_value);
     if !value.is_empty() {
-        headers.push(header(b"X-Fuzz", value));
+        headers.push(b"X-Fuzz", value);
     }
     let request = Request {
         method: Method::from_bytes(if control & 2 == 0 { b"GET" } else { b"POST" }).unwrap(),
@@ -67,7 +66,7 @@ fn request_round_trip(control: u8, value: &[u8], body: &[u8]) {
     let mut sender = Connection::new(Role::Client, Limits::default());
     let mut wire = sender.send_request(&request).unwrap();
     wire.extend(sender.send_data(body).unwrap());
-    wire.extend(sender.end_of_message(&[]).unwrap());
+    wire.extend(sender.end_of_message(&Headers::new()).unwrap());
     decode(
         Connection::new(Role::Server, Limits::default()),
         &wire,
@@ -79,17 +78,18 @@ fn response_round_trip(control: u8, value: &[u8], body: &[u8]) {
     let request = Request {
         method: Method::from_bytes(b"GET").unwrap(),
         target: b"/".to_vec(),
-        headers: vec![header(b"Host", b"example.test")],
+        headers: headers([(b"Host", b"example.test")]),
         http_version: Version::Http11,
     };
     let mut receiver = Connection::new(Role::Client, Limits::default());
     let request_wire = receiver.send_request(&request).unwrap();
-    receiver.end_of_message(&[]).unwrap();
+    receiver.end_of_message(&Headers::new()).unwrap();
 
     let chunked = control & 1 != 0;
-    let mut headers = vec![framing(chunked, body.len())];
+    let (name, framing_value) = framing(chunked, body.len());
+    let mut headers = Headers::from([(name, framing_value)]);
     if !value.is_empty() {
-        headers.push(header(b"X-Fuzz", value));
+        headers.push(b"X-Fuzz", value);
     }
     let response = Response {
         status: StatusCode::from_u16(200).unwrap(),
@@ -109,7 +109,7 @@ fn response_round_trip(control: u8, value: &[u8], body: &[u8]) {
     ));
     let mut wire = sender.send_response(&response).unwrap();
     wire.extend(sender.send_data(body).unwrap());
-    wire.extend(sender.end_of_message(&[]).unwrap());
+    wire.extend(sender.end_of_message(&Headers::new()).unwrap());
     decode(receiver, &wire, body);
 }
 

@@ -1,11 +1,11 @@
 use h11r::{
-    Connection, Data, EndOfMessage, Event, Header, Limits, NextEvent, Request, Response, Role,
+    Connection, Data, EndOfMessage, Event, Headers, Limits, NextEvent, Request, Response, Role,
     State, Version,
 };
 use h11r::{Method, StatusCode};
 
-fn header(name: &[u8], value: &[u8]) -> Header {
-    (name.to_vec(), value.to_vec())
+fn headers<const COUNT: usize>(fields: [(&[u8], &[u8]); COUNT]) -> Headers {
+    Headers::from(fields)
 }
 
 fn data(value: &[u8], chunk_start: bool, chunk_end: bool) -> Data<'_> {
@@ -34,7 +34,7 @@ enum Received {
         chunk_end: bool,
     },
     EndOfMessage {
-        trailers: Vec<Header>,
+        trailers: Headers,
     },
 }
 
@@ -82,12 +82,12 @@ fn public_states_follow_a_complete_reusable_exchange() {
         .send_response(&Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: b"No Content".to_vec(),
-            headers: vec![],
+            headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
     assert_eq!(bytes, b"HTTP/1.1 204 No Content\r\n\r\n");
-    assert!(server.end_of_message(&[]).unwrap().is_empty());
+    assert!(server.end_of_message(&Headers::new()).unwrap().is_empty());
     assert_eq!(
         (server.local_state(), server.peer_state()),
         (State::Done, State::Done)
@@ -121,12 +121,12 @@ fn segmented_request_preserves_headers_and_content_length_body() {
     assert_eq!(request.http_version, Version::Http11);
     assert_eq!(
         request.headers,
-        vec![
-            header(b"Host", b"example.test"),
-            header(b"X-Tag", b"one"),
-            header(b"X-Tag", b"two"),
-            header(b"Content-Length", b"5"),
-        ]
+        headers([
+            (b"Host", b"example.test"),
+            (b"X-Tag", b"one"),
+            (b"X-Tag", b"two"),
+            (b"Content-Length", b"5"),
+        ])
     );
     assert_eq!(event(&mut server), Event::Data(data(b"he", false, false)));
     assert_eq!(server.next_event().unwrap(), NextEvent::NeedData);
@@ -151,11 +151,11 @@ fn incomplete_invalid_heads_have_one_error_across_transport_splits() {
                 .send_request(&Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
-                    headers: vec![header(b"Host", b"example.test")],
+                    headers: headers([(b"Host", b"example.test")]),
                     http_version: Version::Http11,
                 })
                 .unwrap();
-            client.end_of_message(&[]).unwrap();
+            client.end_of_message(&Headers::new()).unwrap();
             for chunk in wire.chunks(chunk_size) {
                 client.receive_data(chunk).unwrap();
                 if let Err(error) = client.next_event() {
@@ -185,7 +185,7 @@ fn chunked_body_reports_chunk_boundaries_and_trailers() {
     assert_eq!(
         event(&mut server),
         Event::EndOfMessage(EndOfMessage {
-            trailers: vec![header(b"Digest", b"ok")]
+            trailers: headers([(b"Digest", b"ok")])
         })
     );
 }
@@ -275,11 +275,11 @@ fn independent_inbound_limits_are_segmentation_invariant() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client.receive_data(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
     assert_eq!(
         client.next_event().unwrap_err().suggested_status_code(),
@@ -297,10 +297,10 @@ fn send_framing_and_end_of_message_are_explicit() {
         .send_request(&Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/upload".to_vec(),
-            headers: vec![
-                header(b"Host", b"example.test"),
-                header(b"Transfer-Encoding", b"chunked"),
-            ],
+            headers: headers([
+                (b"Host", b"example.test"),
+                (b"Transfer-Encoding", b"chunked"),
+            ]),
             http_version: Version::Http11,
         })
         .unwrap();
@@ -310,7 +310,9 @@ fn send_framing_and_end_of_message_are_explicit() {
     );
     assert_eq!(client.send_data(b"abc").unwrap(), b"3\r\nabc\r\n");
     assert_eq!(
-        client.end_of_message(&[header(b"Digest", b"ok")]).unwrap(),
+        client
+            .end_of_message(&headers([(b"Digest", b"ok")]))
+            .unwrap(),
         b"0\r\nDigest: ok\r\n\r\n"
     );
 }
@@ -324,10 +326,7 @@ fn data_parts_preserve_the_callers_body_object() {
         .send_request(&Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![
-                header(b"Host", b"x"),
-                header(b"Transfer-Encoding", b"chunked"),
-            ],
+            headers: headers([(b"Host", b"x"), (b"Transfer-Encoding", b"chunked")]),
             http_version: Version::Http11,
         })
         .unwrap();
@@ -349,11 +348,11 @@ fn only_status_100_clears_continue_waiting() {
         .send_request(&Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![
-                header(b"Host", b"x"),
-                header(b"Content-Length", b"1"),
-                header(b"Expect", b"100-continue"),
-            ],
+            headers: headers([
+                (b"Host", b"x"),
+                (b"Content-Length", b"1"),
+                (b"Expect", b"100-continue"),
+            ]),
             http_version: Version::Http11,
         })
         .unwrap();
@@ -392,11 +391,11 @@ fn continue_waiting_is_gated_by_the_request_http_version() {
             .send_request(&Request {
                 method: Method::from_bytes(b"POST").unwrap(),
                 target: b"/".to_vec(),
-                headers: vec![
-                    header(b"Host", b"x"),
-                    header(b"Content-Length", b"1"),
-                    header(b"Expect", b"100-continue"),
-                ],
+                headers: headers([
+                    (b"Host", b"x"),
+                    (b"Content-Length", b"1"),
+                    (b"Expect", b"100-continue"),
+                ]),
                 http_version: version,
             })
             .unwrap();
@@ -431,11 +430,11 @@ fn rfc_body_length_precedence_and_incomplete_eof() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n")
         .unwrap();
@@ -446,11 +445,11 @@ fn rfc_body_length_precedence_and_incomplete_eof() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    close_delimited.end_of_message(&[]).unwrap();
+    close_delimited.end_of_message(&Headers::new()).unwrap();
     close_delimited
         .receive_data(b"HTTP/1.1 200 OK\r\n\r\nbody")
         .unwrap();
@@ -523,11 +522,11 @@ fn content_length_and_no_body_response_framing_follow_the_ordered_algorithm() {
             .send_request(&Request {
                 method: Method::from_bytes(method).unwrap(),
                 target: b"/".to_vec(),
-                headers: vec![header(b"Host", b"x")],
+                headers: headers([(b"Host", b"x")]),
                 http_version: Version::Http11,
             })
             .unwrap();
-        client.end_of_message(&[]).unwrap();
+        client.end_of_message(&Headers::new()).unwrap();
         let mut wire = format!("HTTP/1.1 {status} Test\r\n").into_bytes();
         wire.extend_from_slice(fields);
         wire.extend_from_slice(b"\r\nnext");
@@ -575,12 +574,12 @@ fn expect_continue_is_sent_only_when_request_content_will_follow() {
     // for a request without content.
     // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.1
     for headers in [
-        vec![header(b"Host", b"x"), header(b"Expect", b"100-continue")],
-        vec![
-            header(b"Host", b"x"),
-            header(b"Content-Length", b"0"),
-            header(b"Expect", b"100-continue"),
-        ],
+        headers([(b"Host", b"x"), (b"Expect", b"100-continue")]),
+        headers([
+            (b"Host", b"x"),
+            (b"Content-Length", b"0"),
+            (b"Expect", b"100-continue"),
+        ]),
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         assert!(
@@ -614,11 +613,11 @@ fn pipeline_pauses_until_both_sides_start_the_next_cycle() {
         .send_response(&Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: vec![],
-            headers: vec![],
+            headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
-    server.end_of_message(&[]).unwrap();
+    server.end_of_message(&Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
 }
@@ -654,15 +653,15 @@ fn accepted_upgrade_exposes_trailing_protocol_bytes() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/chat".to_vec(),
-            headers: vec![
-                header(b"Host", b"x"),
-                header(b"Connection", b"Upgrade"),
-                header(b"Upgrade", b"next-protocol"),
-            ],
+            headers: headers([
+                (b"Host", b"x"),
+                (b"Connection", b"Upgrade"),
+                (b"Upgrade", b"next-protocol"),
+            ]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: next-protocol\r\n\r\nprotocol-data")
         .unwrap();
@@ -682,22 +681,19 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
     let request = Request {
         method: Method::from_bytes(b"GET").unwrap(),
         target: b"/chat".to_vec(),
-        headers: vec![
-            header(b"Host", b"x"),
-            header(b"Connection", b"Upgrade"),
-            header(b"Upgrade", b"next-protocol"),
-        ],
+        headers: headers([
+            (b"Host", b"x"),
+            (b"Connection", b"Upgrade"),
+            (b"Upgrade", b"next-protocol"),
+        ]),
         http_version: Version::Http11,
     };
 
     for headers in [
-        vec![],
-        vec![header(b"Connection", b"Upgrade")],
-        vec![header(b"Upgrade", b"next-protocol")],
-        vec![
-            header(b"Connection", b"Upgrade"),
-            header(b"Upgrade", b"other-protocol"),
-        ],
+        Headers::new(),
+        headers([(b"Connection", b"Upgrade")]),
+        headers([(b"Upgrade", b"next-protocol")]),
+        headers([(b"Connection", b"Upgrade"), (b"Upgrade", b"other-protocol")]),
     ] {
         let mut server = Connection::new(Role::Server, Limits::default());
         server
@@ -726,15 +722,15 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         client.send_request(&request).unwrap();
-        client.end_of_message(&[]).unwrap();
+        client.end_of_message(&Headers::new()).unwrap();
         client.receive_data(wire).unwrap();
         assert!(client.next_event().is_err());
         assert_eq!(client.peer_state(), State::Error);
     }
 
     for headers in [
-        vec![header(b"Host", b"x"), header(b"Upgrade", b"next-protocol")],
-        vec![header(b"Host", b"x"), header(b"Connection", b"Upgrade")],
+        headers([(b"Host", b"x"), (b"Upgrade", b"next-protocol")]),
+        headers([(b"Host", b"x"), (b"Connection", b"Upgrade")]),
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         assert!(
@@ -760,10 +756,7 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
     let switching = Response {
         status: StatusCode::from_u16(101).unwrap(),
         reason: b"Switching Protocols".to_vec(),
-        headers: vec![
-            header(b"Connection", b"Upgrade"),
-            header(b"Upgrade", b"next-protocol"),
-        ],
+        headers: headers([(b"Connection", b"Upgrade"), (b"Upgrade", b"next-protocol")]),
         http_version: Version::Http11,
     };
     assert!(server.send_informational_response(&switching).is_err());
@@ -771,7 +764,7 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
         .send_informational_response(&Response {
             status: StatusCode::from_u16(100).unwrap(),
             reason: b"Continue".to_vec(),
-            headers: vec![],
+            headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
@@ -785,16 +778,16 @@ fn send_rejects_status_line_injection_and_forbidden_framing_fields() {
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-4
     let mut server = Connection::new(Role::Server, Limits::default());
     for (status, reason, headers) in [
-        (200, b"OK\r\nInjected: yes".as_slice(), vec![]),
+        (200, b"OK\r\nInjected: yes".as_slice(), Headers::new()),
         (
             204,
             b"No Content".as_slice(),
-            vec![header(b"Transfer-Encoding", b"chunked")],
+            headers([(b"Transfer-Encoding", b"chunked")]),
         ),
         (
             204,
             b"No Content".as_slice(),
-            vec![header(b"Content-Length", b"0")],
+            headers([(b"Content-Length", b"0")]),
         ),
     ] {
         assert!(
@@ -830,11 +823,11 @@ fn http10_messages_are_close_only_even_with_a_legacy_keep_alive_token() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.0 204 No Content\r\nConnection: keep-alive\r\n\r\n")
         .unwrap();
@@ -856,13 +849,13 @@ fn http10_peer_never_gets_automatic_chunked_framing() {
         .send_response(&Response {
             status: StatusCode::from_u16(200).unwrap(),
             reason: b"OK".to_vec(),
-            headers: vec![],
+            headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
     assert_eq!(head, b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
     assert_eq!(server.send_data(b"body").unwrap(), b"body");
-    assert!(server.end_of_message(&[]).unwrap().is_empty());
+    assert!(server.end_of_message(&Headers::new()).unwrap().is_empty());
     assert_eq!(server.local_state(), State::MustClose);
 }
 
@@ -882,7 +875,7 @@ fn responses_normalize_the_connection_close_signal() {
             .send_response(&Response {
                 status: StatusCode::from_u16(204).unwrap(),
                 reason: b"No Content".to_vec(),
-                headers: vec![header(b"Connection", b"keep-alive")],
+                headers: headers([(b"Connection", b"keep-alive")]),
                 http_version: Version::Http11,
             })
             .unwrap(),
@@ -895,7 +888,7 @@ fn responses_normalize_the_connection_close_signal() {
             .send_response(&Response {
                 status: StatusCode::from_u16(408).unwrap(),
                 reason: b"Request Timeout".to_vec(),
-                headers: vec![header(b"Content-Length", b"0")],
+                headers: headers([(b"Content-Length", b"0")]),
                 http_version: Version::Http11,
             })
             .unwrap(),
@@ -919,7 +912,7 @@ fn request_target_forms_round_trip() {
             .send_request(&Request {
                 method: Method::from_bytes(method).unwrap(),
                 target: target.to_vec(),
-                headers: vec![header(b"Host", b"example.test")],
+                headers: headers([(b"Host", b"example.test")]),
                 http_version: Version::Http11,
             })
             .unwrap_or_else(|error| panic!("request target {target:?}: {error}"));
@@ -946,7 +939,7 @@ fn request_target_rejects_bytes_outside_its_field_boundary() {
         let result = client.send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: target.to_vec(),
-            headers: vec![header(b"Host", b"example.test")],
+            headers: headers([(b"Host", b"example.test")]),
             http_version: Version::Http11,
         });
         assert!(result.is_err(), "target {target:?}");
@@ -972,7 +965,7 @@ fn host_field_uses_uri_host_and_optional_port_grammar() {
             .send_request(&Request {
                 method: Method::from_bytes(b"GET").unwrap(),
                 target: b"/".to_vec(),
-                headers: vec![header(b"Host", host)],
+                headers: headers([(b"Host", host)]),
                 http_version: Version::Http11,
             })
             .unwrap_or_else(|error| panic!("valid Host {host:?}: {error}"));
@@ -983,6 +976,8 @@ fn host_field_uses_uri_host_and_optional_port_grammar() {
         b"user@example.test",
         b"example.test/path",
         b"[2001:db8::1",
+        b"[not-an-address]",
+        b"example.test:80:80",
         b"example.test:not-a-port",
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
@@ -991,7 +986,7 @@ fn host_field_uses_uri_host_and_optional_port_grammar() {
                 .send_request(&Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
-                    headers: vec![header(b"Host", host)],
+                    headers: headers([(b"Host", host)]),
                     http_version: Version::Http11,
                 })
                 .is_err(),
@@ -1041,7 +1036,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
                 .send_request(&Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
-                    headers: vec![header(b"Host", b"x"), header(&[byte], b"value")],
+                    headers: headers([(b"Host", b"x"), (&[byte], b"value")]),
                     http_version: Version::Http11,
                 })
                 .is_ok(),
@@ -1055,7 +1050,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
                 .send_request(&Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
-                    headers: vec![header(b"Host", b"x"), header(b"X-Test", &[byte])],
+                    headers: headers([(b"Host", b"x"), (b"X-Test", &[byte])]),
                     http_version: Version::Http11,
                 })
                 .is_ok(),
@@ -1069,7 +1064,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
                 .send_response(&Response {
                     status: StatusCode::from_u16(204).unwrap(),
                     reason: vec![byte],
-                    headers: vec![],
+                    headers: Headers::new(),
                     http_version: Version::Http11,
                 })
                 .is_ok(),
@@ -1082,7 +1077,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
             .send_request(&Request {
                 method: Method::from_bytes(b"GET").unwrap(),
                 target: b"/".to_vec(),
-                headers: vec![header(b"Host", b"x")],
+                headers: headers([(b"Host", b"x")]),
                 http_version: Version::Http11,
             })
             .unwrap();
@@ -1117,7 +1112,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
                 .send_request(&Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
-                    headers: vec![header(b"Host", b"x"), header(b"X-Test", value)],
+                    headers: headers([(b"Host", b"x"), (b"X-Test", value)]),
                     http_version: Version::Http11,
                 })
                 .is_err()
@@ -1175,7 +1170,7 @@ fn trailer_field_lines_exclude_ows_from_the_parsed_value() {
     assert_eq!(
         event(&mut server),
         Event::EndOfMessage(EndOfMessage {
-            trailers: vec![header(b"X-Test", b"value")],
+            trailers: headers([(b"X-Test", b"value")]),
         })
     );
 }
@@ -1201,15 +1196,12 @@ fn sender_rejects_core_fields_that_cannot_be_trailers() {
             .send_request(&Request {
                 method: Method::from_bytes(b"POST").unwrap(),
                 target: b"/".to_vec(),
-                headers: vec![
-                    header(b"Host", b"x"),
-                    header(b"Transfer-Encoding", b"chunked"),
-                ],
+                headers: headers([(b"Host", b"x"), (b"Transfer-Encoding", b"chunked")]),
                 http_version: Version::Http11,
             })
             .unwrap();
         assert!(
-            client.end_of_message(&[header(name, b"value")]).is_err(),
+            client.end_of_message(&headers([(name, b"value")])).is_err(),
             "trailer {name:?}"
         );
         assert_eq!(client.local_state(), State::SendBody);
@@ -1227,29 +1219,29 @@ fn response_obs_fold_is_normalized_but_request_obs_fold_is_rejected() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 204 No Content\r\nX-Test: one\r\n two\t\r\n\r\n")
         .unwrap();
     let Event::Response(response) = event(&mut client) else {
         panic!("expected response")
     };
-    assert_eq!(response.headers, vec![header(b"X-Test", b"one two")]);
+    assert_eq!(response.headers, headers([(b"X-Test", b"one two")]));
 
     let mut first_line = Connection::new(Role::Client, Limits::default());
     first_line
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    first_line.end_of_message(&[]).unwrap();
+    first_line.end_of_message(&Headers::new()).unwrap();
     first_line
         .receive_data(b"HTTP/1.1 204 No Content\r\n X-Test: hidden\r\n\r\n")
         .unwrap();
@@ -1260,11 +1252,11 @@ fn response_obs_fold_is_normalized_but_request_obs_fold_is_rejected() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    trailers.end_of_message(&[]).unwrap();
+    trailers.end_of_message(&Headers::new()).unwrap();
     trailers
         .receive_data(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Test: one\r\n two\r\n\r\n",
@@ -1274,7 +1266,7 @@ fn response_obs_fold_is_normalized_but_request_obs_fold_is_rejected() {
     assert_eq!(
         event(&mut trailers),
         Event::EndOfMessage(EndOfMessage {
-            trailers: vec![header(b"X-Test", b"one two")],
+            trailers: headers([(b"X-Test", b"one two")]),
         })
     );
 
@@ -1337,11 +1329,11 @@ fn parser_accepted_lf_is_preserved_for_heads_and_trailers() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 204 All Good\nX-Test: one\n two\t\n\n")
         .unwrap();
@@ -1349,7 +1341,7 @@ fn parser_accepted_lf_is_preserved_for_heads_and_trailers() {
         panic!("expected response")
     };
     assert_eq!(response.reason, b"All Good");
-    assert_eq!(response.headers, vec![header(b"X-Test", b"one two")]);
+    assert_eq!(response.headers, headers([(b"X-Test", b"one two")]));
 
     let mut trailers = Connection::new(Role::Server, Limits::default());
     trailers
@@ -1361,7 +1353,7 @@ fn parser_accepted_lf_is_preserved_for_heads_and_trailers() {
     assert_eq!(
         event(&mut trailers),
         Event::EndOfMessage(EndOfMessage {
-            trailers: vec![header(b"X-Test", b"y")],
+            trailers: headers([(b"X-Test", b"y")]),
         })
     );
 }
@@ -1377,11 +1369,11 @@ fn connection_close_disables_reuse_when_sent_by_either_actor() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x"), header(b"Connection", b"close")],
+            headers: headers([(b"Host", b"x"), (b"Connection", b"close")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 204 No Content\r\n\r\n")
         .unwrap();
@@ -1400,11 +1392,11 @@ fn connection_close_disables_reuse_when_sent_by_either_actor() {
         .send_response(&Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: b"No Content".to_vec(),
-            headers: vec![header(b"Connection", b"close")],
+            headers: headers([(b"Connection", b"close")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    server.end_of_message(&[]).unwrap();
+    server.end_of_message(&Headers::new()).unwrap();
     assert_eq!(server.local_state(), State::MustClose);
     assert!(server.start_next_cycle().is_err());
 }
@@ -1426,11 +1418,11 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
         .send_request(&Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
-            headers: vec![header(b"Host", b"x")],
+            headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    inbound_response.end_of_message(&[]).unwrap();
+    inbound_response.end_of_message(&Headers::new()).unwrap();
     inbound_response
         .receive_data(b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
         .unwrap();
@@ -1442,7 +1434,7 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
             .send_request(&Request {
                 method: Method::from_bytes(b"POST").unwrap(),
                 target: b"/".to_vec(),
-                headers: vec![header(b"Transfer-Encoding", b"chunked")],
+                headers: headers([(b"Transfer-Encoding", b"chunked")]),
                 http_version: Version::Http10,
             })
             .is_err()
@@ -1462,16 +1454,24 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
         .send_response(&Response {
             status: StatusCode::from_u16(200).unwrap(),
             reason: b"OK".to_vec(),
-            headers: vec![header(b"Transfer-Encoding", b"chunked")],
+            headers: headers([(b"Transfer-Encoding", b"chunked")]),
             http_version: Version::Http11,
         })
         .unwrap();
     assert_eq!(head, b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
     assert_eq!(outbound_response.send_data(b"body").unwrap(), b"body");
-    assert!(outbound_response.end_of_message(&[]).unwrap().is_empty());
+    assert!(
+        outbound_response
+            .end_of_message(&Headers::new())
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(outbound_response.local_state(), State::MustClose);
 
-    for headers in [vec![], vec![header(b"Transfer-Encoding", b"chunked")]] {
+    for headers in [
+        Headers::new(),
+        headers([(b"Transfer-Encoding", b"chunked")]),
+    ] {
         let mut http10_response = Connection::new(Role::Server, Limits::default());
         http10_response
             .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -1491,7 +1491,12 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
             .unwrap();
         assert_eq!(head, b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n");
         assert_eq!(http10_response.send_data(b"body").unwrap(), b"body");
-        assert!(http10_response.end_of_message(&[]).unwrap().is_empty());
+        assert!(
+            http10_response
+                .end_of_message(&Headers::new())
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(http10_response.local_state(), State::MustClose);
     }
 }
@@ -1513,11 +1518,11 @@ fn eof_preserves_complete_pipelined_messages_already_in_the_buffer() {
         .send_response(&Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: vec![],
-            headers: vec![],
+            headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
-    server.end_of_message(&[]).unwrap();
+    server.end_of_message(&Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
 
     let Event::Request(request) = event(&mut server) else {
@@ -1591,7 +1596,7 @@ fn chunked_message_is_invariant_under_transport_segmentation() {
         assert_eq!(
             events.last(),
             Some(&Received::EndOfMessage {
-                trailers: vec![header(b"Digest", b"ok")],
+                trailers: headers([(b"Digest", b"ok")]),
             })
         );
         let chunks = &events[1..events.len() - 1];
@@ -1630,13 +1635,13 @@ fn rejected_connect_cannot_reuse_the_h11r_connection() {
     let request = Request {
         method: Method::from_bytes(b"CONNECT").unwrap(),
         target: b"example.test:443".to_vec(),
-        headers: vec![header(b"Host", b"example.test:443")],
+        headers: headers([(b"Host", b"example.test:443")]),
         http_version: Version::Http11,
     };
     let response = Response {
         status: StatusCode::from_u16(403).unwrap(),
         reason: b"Forbidden".to_vec(),
-        headers: vec![header(b"Content-Length", b"0")],
+        headers: headers([(b"Content-Length", b"0")]),
         http_version: Version::Http11,
     };
 
@@ -1647,13 +1652,13 @@ fn rejected_connect_cannot_reuse_the_h11r_connection() {
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     server.send_response(&response).unwrap();
-    server.end_of_message(&[]).unwrap();
+    server.end_of_message(&Headers::new()).unwrap();
     assert_eq!(server.local_state(), State::MustClose);
     assert!(server.start_next_cycle().is_err());
 
     let mut client = Connection::new(Role::Client, Limits::default());
     client.send_request(&request).unwrap();
-    client.end_of_message(&[]).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
         .unwrap();
@@ -1661,4 +1666,578 @@ fn rejected_connect_cannot_reuse_the_h11r_connection() {
     assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
     assert_eq!(client.peer_state(), State::MustClose);
     assert!(client.start_next_cycle().is_err());
+}
+
+fn get(target: &[u8]) -> Request {
+    Request {
+        method: Method::from_bytes(b"GET").unwrap(),
+        target: target.to_vec(),
+        headers: headers([(b"Host", b"example.test")]),
+        http_version: Version::Http11,
+    }
+}
+
+#[test]
+fn head_syntax_errors_win_over_limits_under_any_segmentation() {
+    // A complete section and every transport segmentation of it must have one
+    // decision. Syntax errors within max_head_bytes take precedence over the
+    // limit, and are found without buffering the whole limit first.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-2.2
+    fn status(wire: &[u8], limits: Limits, chunk: usize) -> (Option<u16>, usize) {
+        let mut server = Connection::new(Role::Server, limits);
+        let mut received = 0;
+        for part in wire.chunks(chunk) {
+            received += part.len();
+            server.receive_data(part).unwrap();
+            match server.next_event() {
+                Ok(NextEvent::NeedData) => {}
+                Ok(other) => panic!("unexpected result: {other:?}"),
+                Err(error) => return (error.suggested_status_code(), received),
+            }
+        }
+        panic!("head outcome remained incomplete")
+    }
+
+    let limits = Limits::new(512, 8).unwrap();
+    let mut invalid_early = b"GET / HTTP/1.1\r\nHost: x\r\nBad\x00Name: v\r\n".to_vec();
+    invalid_early.extend(std::iter::repeat_n(b'a', 600));
+    let mut invalid_late = b"GET / HTTP/1.1\r\nHost: x\r\nX: ".to_vec();
+    invalid_late.extend(std::iter::repeat_n(b'a', 600));
+    invalid_late.extend_from_slice(b"\x00\r\n");
+    for (wire, expected) in [(invalid_early, 400), (invalid_late, 431)] {
+        for chunk in 1..=wire.len() {
+            assert_eq!(
+                status(&wire, limits, chunk).0,
+                Some(expected),
+                "chunk={chunk}"
+            );
+        }
+    }
+
+    let mut wire = b"GET / HTTP/1.1\r\nHost: x\r\nX\x00: y\r\n".to_vec();
+    wire.extend(std::iter::repeat_n(b'z', 70_000));
+    let (status, received) = status(&wire, Limits::default(), 16);
+    assert_eq!(status, Some(400));
+    assert!(received < 1024, "rejected after {received} bytes");
+}
+
+#[test]
+fn client_refuses_reuse_when_bytes_follow_the_response() {
+    // RFC 9112 Section 6.3: a client must not process extra data after a
+    // complete response as a separate response.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client.send_request(&get(b"/a")).unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
+    client
+        .receive_data(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\naHTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nforged",
+        )
+        .unwrap();
+    assert!(matches!(event(&mut client), Event::Response(_)));
+    assert_eq!(event(&mut client), Event::Data(data(b"a", false, false)));
+    assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+    assert_eq!(client.next_event().unwrap(), NextEvent::Paused);
+
+    assert!(client.start_next_cycle().is_err());
+    assert_eq!(
+        (client.local_state(), client.peer_state()),
+        (State::MustClose, State::MustClose)
+    );
+    assert!(client.send_request(&get(b"/b")).is_err());
+}
+
+#[test]
+fn informational_responses_are_never_sent_to_http10_clients() {
+    // RFC 9110 Section 15.2: a server must not send a 1xx response to an
+    // HTTP/1.0 client.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-15.2
+    for status in [100, 103] {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server
+            .receive_data(b"POST / HTTP/1.0\r\nContent-Length: 1\r\nExpect: 100-continue\r\n\r\n")
+            .unwrap();
+        assert!(matches!(event(&mut server), Event::Request(_)));
+        let result = server.send_informational_response(&Response {
+            status: StatusCode::from_u16(status).unwrap(),
+            reason: vec![],
+            headers: Headers::new(),
+            http_version: Version::Http11,
+        });
+        assert!(result.is_err(), "status={status}");
+        assert_eq!(server.local_state(), State::SendResponse);
+    }
+}
+
+#[test]
+fn http10_upgrade_proposals_are_ignored() {
+    // RFC 9110 Section 7.8: a server must ignore Upgrade received in an
+    // HTTP/1.0 request.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-7.8
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.0\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+    assert_eq!(server.peer_state(), State::MustClose);
+    let switch = server.send_informational_response(&Response {
+        status: StatusCode::from_u16(101).unwrap(),
+        reason: vec![],
+        headers: headers([(b"Connection", b"upgrade"), (b"Upgrade", b"websocket")]),
+        http_version: Version::Http11,
+    });
+    assert!(switch.is_err());
+}
+
+#[test]
+fn chunk_extension_bytes_are_bounded_per_message() {
+    // RFC 9112 Section 7.1.1: a server ought to limit the total length of
+    // chunk extensions received in a request.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1.1
+    let limits = Limits::new(64, 8).unwrap();
+    let message = |chunks: usize| {
+        let mut wire = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        for _ in 0..chunks {
+            wire.extend_from_slice(b"1;ext=abcd\r\na\r\n");
+        }
+        wire.extend_from_slice(b"0\r\n\r\n");
+        wire
+    };
+
+    let mut server = Connection::new(Role::Server, limits);
+    for _ in 0..2 {
+        server.receive_data(&message(7)).unwrap();
+        loop {
+            if let Event::EndOfMessage(_) = event(&mut server) {
+                break;
+            }
+        }
+        server
+            .send_response(&Response {
+                status: StatusCode::from_u16(204).unwrap(),
+                reason: vec![],
+                headers: Headers::new(),
+                http_version: Version::Http11,
+            })
+            .unwrap();
+        server.end_of_message(&Headers::new()).unwrap();
+        server.start_next_cycle().unwrap();
+    }
+
+    let mut server = Connection::new(Role::Server, limits);
+    server.receive_data(&message(8)).unwrap();
+    let error = loop {
+        match server.next_event() {
+            Ok(NextEvent::Event(Event::EndOfMessage(_))) => panic!("extensions were accepted"),
+            Ok(_) => {}
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error.suggested_status_code(), Some(400));
+}
+
+#[test]
+fn request_target_form_depends_on_the_method() {
+    // RFC 9112 Section 3.2: authority-form is only for CONNECT, asterisk-form
+    // only for OPTIONS, and a request-target has no fragment.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-3.2
+    for (method, target, valid) in [
+        (b"CONNECT".as_slice(), b"example.test:443".as_slice(), true),
+        (b"CONNECT", b"[::1]:443", true),
+        (b"CONNECT", b"/", false),
+        (b"CONNECT", b"example.test", false),
+        (b"CONNECT", b"example.test:65535", true),
+        // RFC 9110 Section 9.3.6: reject an empty or invalid port.
+        // https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6
+        (b"CONNECT", b"example.test:", false),
+        (b"CONNECT", b"example.test:0", false),
+        (b"CONNECT", b"example.test:65536", false),
+        (b"CONNECT", b"https://example.test/", false),
+        (b"OPTIONS", b"*", true),
+        (b"GET", b"*", false),
+        (b"GET", b"/a?b=c", true),
+        (b"GET", b"http://example.test/a", true),
+        (b"GET", b"/a#fragment", false),
+        (b"GET", b"example", false),
+    ] {
+        let request = Request {
+            method: Method::from_bytes(method).unwrap(),
+            target: target.to_vec(),
+            headers: headers([(b"Host", b"example.test")]),
+            http_version: Version::Http11,
+        };
+        let mut client = Connection::new(Role::Client, Limits::default());
+        assert_eq!(
+            client.send_request(&request).is_ok(),
+            valid,
+            "send {target:?}"
+        );
+
+        let mut wire = method.to_vec();
+        wire.push(b' ');
+        wire.extend_from_slice(target);
+        wire.extend_from_slice(b" HTTP/1.1\r\nHost: example.test\r\n\r\n");
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server.receive_data(&wire).unwrap();
+        match server.next_event() {
+            Ok(NextEvent::Event(Event::Request(_))) => assert!(valid, "receive {target:?}"),
+            Err(error) => {
+                assert!(!valid, "receive {target:?}");
+                assert_eq!(error.suggested_status_code(), Some(400));
+            }
+            Ok(other) => panic!("unexpected result: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn final_response_before_the_request_body_ends_announces_close() {
+    // RFC 9110 Section 10.1.1: a server that responds before reading the
+    // entire request content should indicate whether it will close.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.1
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    let bytes = server
+        .send_response(&Response {
+            status: StatusCode::from_u16(413).unwrap(),
+            reason: b"Content Too Large".to_vec(),
+            headers: headers([(b"Content-Length", b"0")]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    assert_eq!(
+        bytes,
+        b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    server.end_of_message(&Headers::new()).unwrap();
+    assert_eq!(server.local_state(), State::MustClose);
+}
+
+#[test]
+fn keep_alive_reports_whether_the_connection_can_be_reused() {
+    // RFC 9112 Section 9.3 makes HTTP/1.1 connections persistent unless
+    // either message closes them; protocol errors and switches also end HTTP.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-9.3
+    let outcome = |wire: &[u8]| {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server.receive_data(wire).unwrap();
+        while let Ok(NextEvent::Event(_)) = server.next_event() {}
+        server.keep_alive()
+    };
+    assert!(outcome(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"));
+    assert!(!outcome(
+        b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    ));
+    assert!(!outcome(b"GET / HTTP/1.0\r\n\r\n"));
+    assert!(!outcome(b"GET / HTTP/1.1\r\n\r\n"));
+
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client
+        .send_request(&Request {
+            method: Method::from_bytes(b"GET").unwrap(),
+            target: b"/".to_vec(),
+            headers: headers([
+                (b"Host", b"x"),
+                (b"Connection", b"upgrade"),
+                (b"Upgrade", b"websocket"),
+            ]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    client.end_of_message(&Headers::new()).unwrap();
+    assert!(client.keep_alive());
+    client
+        .receive_data(
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n",
+        )
+        .unwrap();
+    assert!(matches!(
+        event(&mut client),
+        Event::InformationalResponse(_)
+    ));
+    assert!(!client.keep_alive());
+}
+
+#[test]
+fn error_response_after_a_peer_protocol_error_announces_close() {
+    // After a peer protocol error the connection cannot carry another
+    // request, so the error response must say that it closes.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-9.6
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    let error = server.next_event().unwrap_err();
+    assert_eq!(error.suggested_status_code(), Some(400));
+    assert!(!server.keep_alive());
+    let bytes = server
+        .send_response(&Response {
+            status: StatusCode::from_u16(400).unwrap(),
+            reason: b"Bad Request".to_vec(),
+            headers: headers([(b"Content-Length", b"0")]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    assert_eq!(
+        bytes,
+        b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+}
+
+#[test]
+fn complete_messages_frame_a_known_body_with_content_length() {
+    // RFC 9110 Section 8.6: content of known length gets Content-Length,
+    // except where the status or request method forbids content.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-8.6
+    let ok = |headers| Response {
+        status: StatusCode::from_u16(200).unwrap(),
+        reason: b"OK".to_vec(),
+        headers,
+        http_version: Version::Http11,
+    };
+    let post = Request {
+        method: Method::POST,
+        ..get(b"/items")
+    };
+
+    let mut client = Connection::new(Role::Client, Limits::default());
+    assert_eq!(
+        client.send_request_with_body(post.clone(), b"hi").unwrap(),
+        b"POST /items HTTP/1.1\r\nHost: example.test\r\nContent-Length: 2\r\n\r\nhi"
+    );
+    let mut client = Connection::new(Role::Client, Limits::default());
+    assert_eq!(
+        client.send_request_with_body(post, b"").unwrap(),
+        b"POST /items HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n"
+    );
+    let mut client = Connection::new(Role::Client, Limits::default());
+    assert_eq!(
+        client.send_request_with_body(get(b"/"), b"").unwrap(),
+        b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    );
+    assert_eq!(client.local_state(), State::Done);
+
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
+    assert_eq!(
+        server
+            .send_response_with_body(ok(Headers::new()), b"")
+            .unwrap(),
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+    );
+
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
+    assert_eq!(
+        server
+            .send_response_with_body(ok(Headers::new()), b"")
+            .unwrap(),
+        b"HTTP/1.1 200 OK\r\n\r\n"
+    );
+}
+
+#[test]
+fn a_rejected_complete_message_leaves_the_connection_unchanged() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
+    let response = |length: &[u8]| Response {
+        status: StatusCode::from_u16(200).unwrap(),
+        reason: b"OK".to_vec(),
+        headers: headers([(b"Content-Length", length)]),
+        http_version: Version::Http11,
+    };
+
+    // A HEAD response cannot carry content, whatever its Content-Length says.
+    assert!(
+        server
+            .send_response_with_body(response(b"4"), b"body")
+            .is_err()
+    );
+    assert_eq!(server.local_state(), State::SendResponse);
+    assert!(server.keep_alive());
+    assert_eq!(
+        server.send_response_with_body(response(b"4"), b"").unwrap(),
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"
+    );
+
+    let mut client = Connection::new(Role::Client, Limits::default());
+    let mut short = get(b"/");
+    short.headers.push("Content-Length", "5");
+    assert!(client.send_request_with_body(short, b"four").is_err());
+    assert_eq!(client.local_state(), State::Idle);
+    assert!(client.send_request_with_body(get(b"/"), b"").is_ok());
+}
+
+fn response(status: u16, headers: Headers) -> Response {
+    Response {
+        status: StatusCode::from_u16(status).unwrap(),
+        reason: b"OK".to_vec(),
+        headers,
+        http_version: Version::Http11,
+    }
+}
+
+#[test]
+fn a_response_after_all_request_content_arrived_keeps_the_connection() {
+    // RFC 9110 Section 10.1.1 concerns content not yet read. Once every
+    // content byte has arrived, only the end event is pending.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.1
+    for (wire, events) in [
+        (b"GET / HTTP/1.1\r\nHost: x\r\n\r\n".as_slice(), 1),
+        (
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc",
+            2,
+        ),
+    ] {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server.receive_data(wire).unwrap();
+        for _ in 0..events {
+            event(&mut server);
+        }
+        assert_eq!(
+            server
+                .send_response_with_body(response(200, Headers::new()), b"")
+                .unwrap(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        );
+        assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+        server.start_next_cycle().unwrap();
+    }
+}
+
+#[test]
+fn a_successful_connect_response_completes_at_its_head() {
+    // RFC 9110 Section 9.3.6: a 2xx response to CONNECT switches to tunnel
+    // mode after its header section and has no content.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(
+        server
+            .send_response_with_body(response(200, Headers::new()), b"x")
+            .is_err()
+    );
+    assert_eq!(server.local_state(), State::SendResponse);
+    assert_eq!(
+        server
+            .send_response_with_body(response(200, Headers::new()), b"")
+            .unwrap(),
+        b"HTTP/1.1 200 OK\r\n\r\n"
+    );
+    assert_eq!(server.local_state(), State::SwitchedProtocol);
+}
+
+#[test]
+fn connect_trace_and_reset_content_messages_carry_no_content() {
+    // RFC 9110 Sections 9.3.6, 9.3.8, and 15.3.6: CONNECT and TRACE requests
+    // have no content, and a 205 response indicates zero-length content.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.8
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.6
+    let request = |method: &[u8], target: &[u8], framing: Option<(&[u8], &[u8])>| {
+        let mut fields = headers([(b"Host", b"example.test:443")]);
+        fields.extend(framing);
+        Request {
+            method: Method::from_bytes(method).unwrap(),
+            target: target.to_vec(),
+            headers: fields,
+            http_version: Version::Http11,
+        }
+    };
+    for (method, target) in [
+        (b"TRACE".as_slice(), b"/".as_slice()),
+        (b"CONNECT", b"example.test:443"),
+    ] {
+        for framing in [
+            (b"Content-Length".as_slice(), b"1".as_slice()),
+            (b"Transfer-Encoding", b"chunked"),
+        ] {
+            let mut client = Connection::new(Role::Client, Limits::default());
+            assert!(
+                client
+                    .send_request(&request(method, target, Some(framing)))
+                    .is_err()
+            );
+        }
+        let mut client = Connection::new(Role::Client, Limits::default());
+        assert!(
+            client
+                .send_request_with_body(request(method, target, None), b"x")
+                .is_err()
+        );
+        assert_eq!(client.local_state(), State::Idle);
+        client
+            .send_request(&request(method, target, Some((b"Content-Length", b"0"))))
+            .unwrap();
+    }
+
+    let server = || {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server
+            .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        event(&mut server);
+        event(&mut server);
+        server
+    };
+    let mut streaming = server();
+    assert_eq!(
+        streaming
+            .send_response(&response(205, Headers::new()))
+            .unwrap(),
+        b"HTTP/1.1 205 OK\r\nContent-Length: 0\r\n\r\n"
+    );
+    assert!(streaming.send_data(b"x").is_err());
+    assert!(
+        server()
+            .send_response(&response(205, headers([(b"Content-Length", b"3")])))
+            .is_err()
+    );
+    assert!(
+        server()
+            .send_response_with_body(response(205, Headers::new()), b"x")
+            .is_err()
+    );
+}
+
+#[test]
+fn an_http11_response_without_framing_fields_is_chunked() {
+    // RFC 9112 Section 6.1: an HTTP/1.1 server can frame content of unknown
+    // length with chunked transfer coding.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.1
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    event(&mut server);
+    event(&mut server);
+    assert_eq!(
+        server
+            .send_response(&response(200, Headers::new()))
+            .unwrap(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    );
+    assert_eq!(server.send_data(b"abc").unwrap(), b"3\r\nabc\r\n");
+    assert_eq!(
+        server.end_of_message(&Headers::new()).unwrap(),
+        b"0\r\n\r\n"
+    );
+    assert!(server.keep_alive());
 }

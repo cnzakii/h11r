@@ -1,10 +1,18 @@
 //! HTTP/1.1 connection lifecycle and semantic event flow.
 //!
 use crate::state::{ConnectionState, StateEvent, SwitchKind, SwitchProposals};
-use crate::wire::*;
+use crate::wire::{
+    Buffer, Chunk, Framing, Reader, SectionProgress, count_header, expects_continue, find_crlf,
+    framing, has_framing_fields, has_token, incomplete_line_len, local, parse_chunk_header,
+    parse_request_head, parse_response_head, parse_trailers, protocol_matches, reader, remote,
+    response_framing, serialize_request, serialize_response, set_connection_close,
+    upgrade_protocols, valid_host, valid_request_target, validate_headers, validate_reason,
+    validate_request, validate_trailers, write_headers,
+};
 use crate::{
-    Data, DataParts, EndOfMessage, Event, Header, InformationalResponse, Limits,
-    LocalProtocolError, NextEvent, RemoteProtocolError, Request, Response, Role, State, Version,
+    Data, DataParts, EndOfMessage, Event, Headers, InformationalResponse, Limits,
+    LocalProtocolError, Method, NextEvent, RemoteProtocolError, Request, Response, Role, State,
+    StatusCode, Version,
 };
 use std::borrow::Cow;
 
@@ -53,11 +61,18 @@ pub struct Connection {
     state: ConnectionState,
     limits: Limits,
     input: Buffer,
-    progress: Option<SectionProgress>,
-    reader: Reader,
-    writer: Option<Framing>,
     eof: bool,
     peer_version: Option<Version>,
+    cycle: Cycle,
+}
+
+/// State scoped to one request/response cycle, reset by `start_next_cycle`.
+#[derive(Clone, Debug, Default)]
+struct Cycle {
+    progress: SectionProgress,
+    reader: Reader,
+    writer: Option<Framing>,
+    chunk_extension_bytes: usize,
     request_kind: Option<RequestKind>,
     upgrade_proposals: Vec<Vec<u8>>,
     waiting_for_continue: bool,
@@ -73,15 +88,9 @@ impl Connection {
             state: ConnectionState::new(),
             limits,
             input: Buffer::default(),
-            progress: None,
-            reader: Reader::Head,
-            writer: None,
             eof: false,
             peer_version: None,
-            request_kind: None,
-            upgrade_proposals: Vec::new(),
-            waiting_for_continue: false,
-            continue_before_upgrade: false,
+            cycle: Cycle::default(),
         }
     }
 
@@ -97,6 +106,23 @@ impl Connection {
         self.state.state(self.role.peer())
     }
 
+    /// Whether HTTP may continue on this connection after the current exchange.
+    ///
+    /// This becomes `false` once either actor requires closure, closes,
+    /// fails, or switches protocols. When it remains `true` after both
+    /// messages complete, [`Connection::start_next_cycle`] can reuse the
+    /// connection.
+    #[must_use]
+    pub fn keep_alive(&self) -> bool {
+        self.state.keep_alive()
+            && [self.local_state(), self.peer_state()].iter().all(|state| {
+                !matches!(
+                    state,
+                    State::MustClose | State::Closed | State::Error | State::SwitchedProtocol
+                )
+            })
+    }
+
     /// Returns the most recently parsed peer HTTP version.
     #[must_use]
     pub const fn peer_http_version(&self) -> Option<Version> {
@@ -106,7 +132,7 @@ impl Connection {
     /// Whether the client has sent `Expect: 100-continue` but has not begun its body.
     #[must_use]
     pub const fn client_is_waiting_for_100_continue(&self) -> bool {
-        self.waiting_for_continue
+        self.cycle.waiting_for_continue
     }
 
     /// Returns bytes that belong to a pipelined message or switched protocol,
@@ -209,15 +235,15 @@ impl Connection {
             _ => {}
         }
 
-        match self.reader {
+        match self.cycle.reader {
             Reader::Head => self.read_head(),
-            Reader::Fixed(0) => self.finish_peer(Vec::new()),
+            Reader::Fixed(0) => self.finish_peer(Headers::new()),
             Reader::Fixed(remaining) => {
                 let count = remaining.min(self.input.as_slice().len());
                 if count == 0 {
                     return self.need_data_or_eof("unexpected EOF in Content-Length body");
                 }
-                self.reader = Reader::Fixed(remaining - count);
+                self.cycle.reader = Reader::Fixed(remaining - count);
                 self.peer_data(count, false, false)
             }
             Reader::CloseDelimited => {
@@ -226,7 +252,7 @@ impl Connection {
                     return self.peer_data(count, false, false);
                 }
                 if self.eof {
-                    return self.finish_peer(Vec::new());
+                    return self.finish_peer(Headers::new());
                 }
                 Ok(Polled::NeedData)
             }
@@ -247,48 +273,63 @@ impl Connection {
     }
 
     fn request_is(&self, kind: RequestKind) -> bool {
-        self.request_kind == Some(kind)
+        self.cycle.request_kind == Some(kind)
+    }
+
+    /// Whether a final response with `status` turns a CONNECT into a tunnel.
+    fn opens_tunnel(&self, status: StatusCode) -> bool {
+        self.request_is(RequestKind::Connect) && status.is_success()
+    }
+
+    /// RFC 9112 Section 6.3 items 1 and 2: these final responses have no
+    /// content, whatever framing fields they carry.
+    /// https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
+    fn response_has_no_body(&self, status: StatusCode) -> bool {
+        matches!(status.as_u16(), 204 | 304)
+            || self.request_is(RequestKind::Head)
+            || self.opens_tunnel(status)
     }
 
     fn read_head(&mut self) -> Result<Polled, RemoteProtocolError> {
-        let request = self.role == Role::Server;
-        if !self.section_ready(true) {
+        if !self.section_due(true) {
             return self.wait_for_section(true);
         }
-        if request {
-            let Some((end, request)) = parse_request_head(
-                self.input.as_slice(),
-                self.limits.max_head_bytes,
-                self.limits.max_header_count,
-            )?
-            else {
+        let max_headers = self.limits.max_header_count;
+        if self.role == Role::Server {
+            let Some((end, request)) = parse_request_head(self.section(), max_headers)? else {
                 return self.wait_for_section(true);
             };
             self.input.consume(end);
-            self.progress = None;
+            self.cycle.progress = SectionProgress::default();
             self.accept_request(request)
         } else {
-            let Some((end, response)) = parse_response_head(
-                self.input.as_slice(),
-                self.limits.max_head_bytes,
-                self.limits.max_header_count,
-            )?
-            else {
+            let Some((end, response)) = parse_response_head(self.section(), max_headers)? else {
                 return self.wait_for_section(true);
             };
             self.input.consume(end);
-            self.progress = None;
+            self.cycle.progress = SectionProgress::default();
             self.accept_response(response)
         }
     }
 
-    fn section_ready(&mut self, skip_leading_empty: bool) -> bool {
+    /// Whether the buffered field section should be handed to `httparse`.
+    ///
+    /// A section larger than the limit is parsed once more before it is
+    /// rejected, so a syntax error within the limit wins under any
+    /// segmentation.
+    fn section_due(&mut self, skip_leading_empty: bool) -> bool {
         self.eof
-            || self.progress.as_mut().is_none_or(|progress| {
-                progress
-                    .poll(self.input.as_slice(), skip_leading_empty)
-                    .is_some()
-            })
+            || self.input.as_slice().len() > self.limits.max_head_bytes
+            || self
+                .cycle
+                .progress
+                .due(self.input.as_slice(), skip_leading_empty)
+    }
+
+    /// The buffered field section prefix within the configured byte limit.
+    fn section(&self) -> &[u8] {
+        let data = self.input.as_slice();
+        &data[..data.len().min(self.limits.max_head_bytes)]
     }
 
     fn wait_for_section(
@@ -311,9 +352,6 @@ impl Connection {
         if self.input.as_slice().len() > self.limits.max_head_bytes {
             return Err(remote(limit_message, status));
         }
-        self.progress
-            .get_or_insert_default()
-            .poll(self.input.as_slice(), skip_leading_empty);
         self.need_data_or_eof(eof_message)
     }
 
@@ -324,7 +362,7 @@ impl Connection {
             headers,
             http_version: version,
         } = request;
-        if !valid_request_target(&target) {
+        if !valid_request_target(method.as_bytes(), &target) {
             return Err(remote("invalid request target", Some(400)));
         }
         if !valid_host(version, &headers) {
@@ -339,12 +377,13 @@ impl Connection {
             SwitchProposals::from_flags(method.as_bytes() == b"CONNECT", !upgrades.is_empty());
         self.advance_peer(StateEvent::Request(proposals))?;
         self.apply_persistence(version, &headers);
-        self.request_kind = Some(RequestKind::from_method(method.as_bytes()));
-        self.waiting_for_continue = expects_continue(version, &headers, framing);
-        self.continue_before_upgrade = self.waiting_for_continue && !upgrades.is_empty();
-        self.upgrade_proposals = upgrades;
+        self.cycle.request_kind = Some(RequestKind::from_method(method.as_bytes()));
+        self.cycle.waiting_for_continue = expects_continue(version, &headers, framing);
+        self.cycle.continue_before_upgrade =
+            self.cycle.waiting_for_continue && !upgrades.is_empty();
+        self.cycle.upgrade_proposals = upgrades;
         self.peer_version = Some(version);
-        self.reader = reader(framing);
+        self.cycle.reader = reader(framing);
         Ok(Polled::Event(Event::Request(Request {
             method,
             target,
@@ -362,7 +401,8 @@ impl Connection {
         } = response;
         if status.is_informational() {
             if status.as_u16() == 101
-                && (self.continue_before_upgrade || !self.valid_upgrade_response(version, &headers))
+                && (self.cycle.continue_before_upgrade
+                    || !self.valid_upgrade_response(version, &headers))
             {
                 return Err(remote("invalid 101 Upgrade response", None));
             }
@@ -373,8 +413,8 @@ impl Connection {
             };
             self.advance_peer(event)?;
             if status.as_u16() == 100 {
-                self.waiting_for_continue = false;
-                self.continue_before_upgrade = false;
+                self.cycle.waiting_for_continue = false;
+                self.cycle.continue_before_upgrade = false;
             }
             self.peer_version = Some(version);
             return Ok(Polled::Event(Event::InformationalResponse(
@@ -386,7 +426,7 @@ impl Connection {
                 },
             )));
         }
-        let connect = self.request_is(RequestKind::Connect) && status.is_success();
+        let connect = self.opens_tunnel(status);
         self.advance_peer(if connect {
             StateEvent::ProtocolSwitch(SwitchKind::Connect)
         } else {
@@ -394,14 +434,10 @@ impl Connection {
         })?;
         self.apply_persistence(version, &headers);
         self.peer_version = Some(version);
-        self.waiting_for_continue = false;
-        self.continue_before_upgrade = false;
-        self.upgrade_proposals.clear();
-        let no_body = status.as_u16() == 204
-            || status.as_u16() == 304
-            || self.request_is(RequestKind::Head)
-            || connect;
-        let framing = if no_body {
+        self.cycle.waiting_for_continue = false;
+        self.cycle.continue_before_upgrade = false;
+        self.cycle.upgrade_proposals.clear();
+        let framing = if self.response_has_no_body(status) {
             Framing::Fixed(0)
         } else {
             response_framing(&headers, version)?
@@ -409,7 +445,7 @@ impl Connection {
         if framing == Framing::CloseDelimited {
             self.state.disable_keep_alive();
         }
-        self.reader = reader(framing);
+        self.cycle.reader = reader(framing);
         Ok(Polled::Event(Event::Response(Response {
             status,
             reason,
@@ -428,7 +464,7 @@ impl Connection {
                             (self.role == Role::Server).then_some(400),
                         ));
                     }
-                    self.reader = Reader::Chunked(Chunk::Size {
+                    self.cycle.reader = Reader::Chunked(Chunk::Size {
                         scanned: self.input.as_slice().len().saturating_sub(1),
                     });
                     return self.need_data_or_eof("unexpected EOF in chunk size");
@@ -442,12 +478,25 @@ impl Connection {
                 let line = &self.input.as_slice()[..end - 2];
                 let size = parse_chunk_header(line)
                     .ok_or_else(|| remote("invalid chunk size", Some(400)))?;
+                // RFC 9112 Section 7.1.1: bound extension bytes across the
+                // whole message, not only within one chunk-size line.
+                let digits = line
+                    .iter()
+                    .take_while(|byte| byte.is_ascii_hexdigit())
+                    .count();
+                self.cycle.chunk_extension_bytes += line.len() - digits;
+                if self.cycle.chunk_extension_bytes > self.limits.max_head_bytes {
+                    return Err(remote(
+                        "chunk extensions exceed max_head_bytes",
+                        (self.role == Role::Server).then_some(400),
+                    ));
+                }
                 self.input.consume(end);
                 if size == 0 {
-                    self.reader = Reader::Chunked(Chunk::Trailers);
-                    self.progress = None;
+                    self.cycle.reader = Reader::Chunked(Chunk::Trailers);
+                    self.cycle.progress = SectionProgress::default();
                 } else {
-                    self.reader = Reader::Chunked(Chunk::Data {
+                    self.cycle.reader = Reader::Chunked(Chunk::Data {
                         remaining: size,
                         first: true,
                     });
@@ -460,7 +509,7 @@ impl Connection {
                     return self.need_data_or_eof("unexpected EOF in chunk data");
                 }
                 let last = count == remaining;
-                self.reader = if last {
+                self.cycle.reader = if last {
                     Reader::Chunked(Chunk::DataEnd)
                 } else {
                     Reader::Chunked(Chunk::Data {
@@ -478,16 +527,15 @@ impl Connection {
                     return Err(remote("chunk data is not followed by CRLF", Some(400)));
                 }
                 self.input.consume(2);
-                self.reader = Reader::Chunked(Chunk::Size { scanned: 0 });
+                self.cycle.reader = Reader::Chunked(Chunk::Size { scanned: 0 });
                 self.next_event_inner()
             }
             Chunk::Trailers => {
-                if !self.section_ready(false) {
+                if !self.section_due(false) {
                     return self.wait_for_section(false);
                 }
                 let Some((end, trailers)) = parse_trailers(
-                    self.input.as_slice(),
-                    self.limits.max_head_bytes,
+                    self.section(),
                     self.limits.max_header_count,
                     self.role == Role::Client,
                 )?
@@ -495,7 +543,7 @@ impl Connection {
                     return self.wait_for_section(false);
                 };
                 self.input.consume(end);
-                self.progress = None;
+                self.cycle.progress = SectionProgress::default();
                 self.finish_peer(trailers)
             }
         }
@@ -508,7 +556,7 @@ impl Connection {
         chunk_end: bool,
     ) -> Result<Polled, RemoteProtocolError> {
         self.advance_peer(StateEvent::Data)?;
-        self.waiting_for_continue = false;
+        self.cycle.waiting_for_continue = false;
         Ok(Polled::Data {
             count,
             chunk_start,
@@ -516,9 +564,9 @@ impl Connection {
         })
     }
 
-    fn finish_peer(&mut self, trailers: Vec<Header>) -> Result<Polled, RemoteProtocolError> {
+    fn finish_peer(&mut self, trailers: Headers) -> Result<Polled, RemoteProtocolError> {
         self.advance_peer(StateEvent::EndOfMessage)?;
-        self.reader = Reader::Head;
+        self.cycle.reader = Reader::Head;
         Ok(Polled::Event(Event::EndOfMessage(EndOfMessage {
             trailers,
         })))
@@ -537,14 +585,14 @@ impl Connection {
         }
     }
 
-    fn apply_persistence(&mut self, version: Version, headers: &[Header]) {
+    fn apply_persistence(&mut self, version: Version, headers: &Headers) {
         let persistent = version == Version::Http11 && !has_token(headers, b"connection", b"close");
         if !persistent {
             self.state.disable_keep_alive();
         }
     }
 
-    fn proposed_upgrades(&self, version: Version, headers: &[Header]) -> Vec<Vec<u8>> {
+    fn proposed_upgrades(&self, version: Version, headers: &Headers) -> Vec<Vec<u8>> {
         if version == Version::Http11 && has_token(headers, b"connection", b"upgrade") {
             upgrade_protocols(headers).unwrap_or_default()
         } else {
@@ -552,13 +600,14 @@ impl Connection {
         }
     }
 
-    fn valid_upgrade_response(&self, version: Version, headers: &[Header]) -> bool {
+    fn valid_upgrade_response(&self, version: Version, headers: &Headers) -> bool {
         version == Version::Http11
             && has_token(headers, b"connection", b"upgrade")
             && upgrade_protocols(headers).is_some_and(|selected| {
                 !selected.is_empty()
                     && selected.iter().all(|selected| {
-                        self.upgrade_proposals
+                        self.cycle
+                            .upgrade_proposals
                             .iter()
                             .any(|offered| protocol_matches(offered, selected))
                     })
@@ -578,6 +627,13 @@ impl Connection {
         validate_request(request)?;
         let framing = framing(&request.headers, request.http_version)
             .map_err(|error| local(error.message))?;
+        // RFC 9110 Sections 9.3.6 and 9.3.8: CONNECT and TRACE requests have
+        // no content.
+        if framing != Framing::Fixed(0)
+            && [Method::CONNECT, Method::TRACE].contains(&request.method)
+        {
+            return Err(local("CONNECT and TRACE requests cannot carry content"));
+        }
         if framing == Framing::Fixed(0) && has_token(&request.headers, b"expect", b"100-continue") {
             return Err(local("100-continue requires request content"));
         }
@@ -597,12 +653,13 @@ impl Connection {
         );
         self.advance_local(StateEvent::Request(proposals))?;
         self.apply_persistence(request.http_version, &request.headers);
-        self.request_kind = Some(RequestKind::from_method(request.method.as_bytes()));
-        self.writer = Some(framing);
-        self.waiting_for_continue =
+        self.cycle.request_kind = Some(RequestKind::from_method(request.method.as_bytes()));
+        self.cycle.writer = Some(framing);
+        self.cycle.waiting_for_continue =
             expects_continue(request.http_version, &request.headers, framing);
-        self.continue_before_upgrade = self.waiting_for_continue && !upgrades.is_empty();
-        self.upgrade_proposals = upgrades;
+        self.cycle.continue_before_upgrade =
+            self.cycle.waiting_for_continue && !upgrades.is_empty();
+        self.cycle.upgrade_proposals = upgrades;
         Ok(serialize_request(request))
     }
 
@@ -611,7 +668,8 @@ impl Connection {
     /// # Errors
     ///
     /// Returns [`LocalProtocolError`] for the wrong role or state, an invalid
-    /// response, or a protocol switch that was not validly proposed.
+    /// response, an HTTP/1.0 client, or a protocol switch that was not validly
+    /// proposed.
     pub fn send_informational_response(
         &mut self,
         response: &InformationalResponse,
@@ -621,16 +679,17 @@ impl Connection {
                 "an informational response requires a server role and 1xx status",
             ));
         }
+        // RFC 9110 Section 15.2: HTTP/1.0 did not define any 1xx status codes.
+        if self.peer_version == Some(Version::Http10) {
+            return Err(local("a 1xx response cannot be sent to an HTTP/1.0 client"));
+        }
         validate_headers(&response.headers)?;
         validate_reason(&response.reason)?;
-        if count_header(&response.headers, b"transfer-encoding")
-            + count_header(&response.headers, b"content-length")
-            > 0
-        {
+        if has_framing_fields(&response.headers) {
             return Err(local("informational responses cannot carry framing fields"));
         }
         if response.status.as_u16() == 101
-            && (self.continue_before_upgrade
+            && (self.cycle.continue_before_upgrade
                 || !self.valid_upgrade_response(response.http_version, &response.headers))
         {
             return Err(local("invalid 101 Upgrade response"));
@@ -642,8 +701,8 @@ impl Connection {
         };
         self.advance_local(event)?;
         if response.status.as_u16() == 100 {
-            self.waiting_for_continue = false;
-            self.continue_before_upgrade = false;
+            self.cycle.waiting_for_continue = false;
+            self.cycle.continue_before_upgrade = false;
         }
         Ok(serialize_response(
             response.http_version,
@@ -667,22 +726,17 @@ impl Connection {
         }
         validate_headers(&response.headers)?;
         validate_reason(&response.reason)?;
-        let connect = self.request_is(RequestKind::Connect) && response.status.is_success();
-        let framing_fields = count_header(&response.headers, b"transfer-encoding")
-            + count_header(&response.headers, b"content-length");
-        if (response.status.as_u16() == 204 || connect) && framing_fields > 0 {
+        let connect = self.opens_tunnel(response.status);
+        if (response.status.as_u16() == 204 || connect) && has_framing_fields(&response.headers) {
             return Err(local("this response status cannot carry framing fields"));
         }
-        let no_body = response.status.as_u16() == 204
-            || response.status.as_u16() == 304
-            || self.request_is(RequestKind::Head)
-            || connect;
+        let no_body = self.response_has_no_body(response.status);
         // Borrow the common path; normalization clones only when fields change.
-        let mut headers = Cow::Borrowed(response.headers.as_slice());
+        let mut headers = Cow::Borrowed(&response.headers);
         if (self.peer_version != Some(Version::Http11) || response.http_version != Version::Http11)
             && count_header(&headers, b"transfer-encoding") > 0
         {
-            headers.to_mut().retain(|(name, _)| {
+            headers.to_mut().retain(|name, _| {
                 !name.eq_ignore_ascii_case(b"transfer-encoding")
                     && !name.eq_ignore_ascii_case(b"content-length")
             });
@@ -690,16 +744,23 @@ impl Connection {
         let mut force_close = false;
         let framing = if no_body {
             Framing::Fixed(0)
-        } else if count_header(&headers, b"transfer-encoding")
-            + count_header(&headers, b"content-length")
-            == 0
-        {
+        } else if response.status.as_u16() == 205 {
+            // RFC 9110 Section 15.3.6: a 205 response has no content and
+            // indicates that with a zero length or by closing.
+            if !has_framing_fields(&headers) {
+                headers.to_mut().push(b"Content-Length", b"0");
+            }
+            let framing =
+                framing(&headers, response.http_version).map_err(|error| local(error.message))?;
+            if framing != Framing::Fixed(0) {
+                return Err(local("a 205 response cannot carry content"));
+            }
+            framing
+        } else if !has_framing_fields(&headers) {
             if self.peer_version == Some(Version::Http11)
                 && response.http_version == Version::Http11
             {
-                headers
-                    .to_mut()
-                    .push((b"Transfer-Encoding".to_vec(), b"chunked".to_vec()));
+                headers.to_mut().push(b"Transfer-Encoding", b"chunked");
                 Framing::Chunked
             } else {
                 force_close = true;
@@ -713,6 +774,11 @@ impl Connection {
                 || self.peer_version != Some(Version::Http11)
                 || response.http_version != Version::Http11
                 || force_close
+                // RFC 9110 Section 10.1.1: announce closure when responding
+                // before the request content has been fully read. A request
+                // whose content has all arrived only awaits its end event.
+                || (self.peer_state() == State::SendBody
+                    && !matches!(self.cycle.reader, Reader::Fixed(0)))
                 || has_token(&headers, b"connection", b"close"))
         {
             set_connection_close(headers.to_mut());
@@ -723,16 +789,98 @@ impl Connection {
             StateEvent::Response
         })?;
         self.apply_persistence(response.http_version, headers.as_ref());
-        self.writer = Some(framing);
-        self.waiting_for_continue = false;
-        self.continue_before_upgrade = false;
-        self.upgrade_proposals.clear();
+        self.cycle.writer = Some(framing);
+        self.cycle.waiting_for_continue = false;
+        self.cycle.continue_before_upgrade = false;
+        self.cycle.upgrade_proposals.clear();
         Ok(serialize_response(
             response.http_version,
             response.status,
             &response.reason,
             headers.as_ref(),
         ))
+    }
+
+    /// Serializes a complete client request: its head, `body`, and the end of
+    /// the message.
+    ///
+    /// A request without `Content-Length` or `Transfer-Encoding` gets
+    /// `Content-Length` when `body` is non-empty or the method defines
+    /// content (`POST`, `PUT`, `PATCH`), as RFC 9110 Section 8.6 recommends.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalProtocolError`] under the conditions of
+    /// [`Connection::send_request`], or if `body` does not match the request
+    /// framing. The connection is unchanged after an error.
+    pub fn send_request_with_body(
+        &mut self,
+        mut request: Request,
+        body: &[u8],
+    ) -> Result<Vec<u8>, LocalProtocolError> {
+        let expects_content = [Method::POST, Method::PUT, Method::PATCH].contains(&request.method);
+        if (expects_content || !body.is_empty()) && !has_framing_fields(&request.headers) {
+            request
+                .headers
+                .push(b"Content-Length", body.len().to_string());
+        }
+        self.send_complete(|connection| connection.send_request(&request), body)
+    }
+
+    /// Serializes a complete final response: its head, `body`, and the end of
+    /// the message.
+    ///
+    /// A response without `Content-Length` or `Transfer-Encoding` gets
+    /// `Content-Length` unless its status or request method forbids content,
+    /// so a known body is never chunked or close-delimited. A successful
+    /// `CONNECT` response returns only its head, where the tunnel starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalProtocolError`] under the conditions of
+    /// [`Connection::send_response`], or if `body` does not match the response
+    /// framing, including any body for a response that cannot carry content.
+    /// The connection is unchanged after an error.
+    pub fn send_response_with_body(
+        &mut self,
+        mut response: Response,
+        body: &[u8],
+    ) -> Result<Vec<u8>, LocalProtocolError> {
+        if !has_framing_fields(&response.headers) && !self.response_has_no_body(response.status) {
+            response
+                .headers
+                .push(b"Content-Length", body.len().to_string());
+        }
+        self.send_complete(|connection| connection.send_response(&response), body)
+    }
+
+    /// Sends a head, `body`, and end of message as one write, restoring the
+    /// connection if any step fails so no partial message is committed.
+    fn send_complete(
+        &mut self,
+        head: impl FnOnce(&mut Self) -> Result<Vec<u8>, LocalProtocolError>,
+        body: &[u8],
+    ) -> Result<Vec<u8>, LocalProtocolError> {
+        let saved = (self.state, self.cycle.clone());
+        let result = head(self).and_then(|mut out| {
+            // A successful CONNECT becomes a tunnel at the end of its head.
+            if self.local_state() == State::SwitchedProtocol {
+                return if body.is_empty() {
+                    Ok(out)
+                } else {
+                    Err(local("a successful CONNECT response cannot carry content"))
+                };
+            }
+            if !body.is_empty() {
+                out.extend(self.send_data(body)?);
+            }
+            out.extend(self.end_of_message(&Headers::new())?);
+            Ok(out)
+        });
+        if result.is_err() {
+            (self.state, self.cycle) = saved;
+        }
+        result
     }
 
     /// Serializes body bytes according to the selected message framing.
@@ -785,6 +933,7 @@ impl Connection {
         length: usize,
     ) -> Result<(Vec<u8>, Vec<u8>), LocalProtocolError> {
         let (next, prefix, suffix) = match self
+            .cycle
             .writer
             .ok_or_else(|| local("message framing is not initialized"))?
         {
@@ -801,8 +950,8 @@ impl Connection {
             ),
         };
         self.advance_local(StateEvent::Data)?;
-        self.writer = Some(next);
-        self.waiting_for_continue = false;
+        self.cycle.writer = Some(next);
+        self.cycle.waiting_for_continue = false;
         Ok((prefix, suffix))
     }
 
@@ -817,9 +966,10 @@ impl Connection {
     /// Returns [`LocalProtocolError`] if the body length is incomplete, the
     /// framing forbids trailers, a trailer field is invalid, or the state does
     /// not permit message completion.
-    pub fn end_of_message(&mut self, trailers: &[Header]) -> Result<Vec<u8>, LocalProtocolError> {
+    pub fn end_of_message(&mut self, trailers: &Headers) -> Result<Vec<u8>, LocalProtocolError> {
         validate_trailers(trailers)?;
         let bytes = match self
+            .cycle
             .writer
             .ok_or_else(|| local("message framing is not initialized"))?
         {
@@ -836,8 +986,8 @@ impl Connection {
             }
         };
         self.advance_local(StateEvent::EndOfMessage)?;
-        self.writer = None;
-        self.waiting_for_continue = false;
+        self.cycle.writer = None;
+        self.cycle.waiting_for_continue = false;
         Ok(bytes)
     }
 
@@ -846,18 +996,24 @@ impl Connection {
     /// # Errors
     ///
     /// Returns [`LocalProtocolError`] unless both actors completed a reusable
-    /// HTTP exchange with no pending switch.
+    /// HTTP exchange with no pending switch. A client also refuses reuse, and
+    /// disables keep-alive, when peer bytes follow the complete response.
     pub fn start_next_cycle(&mut self) -> Result<(), LocalProtocolError> {
+        // RFC 9112 Section 6.3: a client must not process bytes that follow
+        // a complete response as a separate response.
+        if self.role == Role::Client
+            && self.peer_state() == State::Done
+            && !self.input.as_slice().is_empty()
+        {
+            self.state.disable_keep_alive();
+            return Err(local(
+                "unsolicited bytes follow the response; the connection is not reusable",
+            ));
+        }
         self.state
             .start_next_cycle()
             .map_err(|_| local("connection is not reusable"))?;
-        self.reader = Reader::Head;
-        self.writer = None;
-        self.progress = None;
-        self.request_kind = None;
-        self.upgrade_proposals.clear();
-        self.waiting_for_continue = false;
-        self.continue_before_upgrade = false;
+        self.cycle = Cycle::default();
         Ok(())
     }
 
@@ -869,7 +1025,7 @@ impl Connection {
     /// local state.
     pub fn close(&mut self) -> Result<(), LocalProtocolError> {
         self.advance_local(StateEvent::ConnectionClosed)?;
-        self.writer = None;
+        self.cycle.writer = None;
         Ok(())
     }
 }

@@ -155,6 +155,11 @@ impl ConnectionState {
         role: Role,
         event: StateEvent,
     ) -> Result<(), InvalidTransition> {
+        // Body data is a self-loop in SEND_BODY with no joint-state effect, and
+        // the stored state is always stabilized, so nothing else can change.
+        if event == StateEvent::Data && self.state(role) == State::SendBody {
+            return Ok(());
+        }
         // Apply to a copy so rejection cannot commit a partial transition.
         let mut next = *self;
         let current = match role {
@@ -218,6 +223,8 @@ impl ConnectionState {
     }
 
     pub(crate) fn process_error(&mut self, role: Role) {
+        // A poisoned actor can never complete another message.
+        self.keep_alive = false;
         match role {
             Role::Client => self.client = State::Error,
             Role::Server => self.server = State::Error,

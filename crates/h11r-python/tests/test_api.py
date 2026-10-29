@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import copy
+import pickle
+
 import h11r
 import pytest
 
@@ -87,6 +90,8 @@ def test_python_text_and_buffer_inputs_preserve_http_octets() -> None:
     invalid_pair = h11r.Connection(h11r.Role.CLIENT)
     with pytest.raises(TypeError, match="2-tuple"):
         invalid_pair.send_request("GET", "/", [["Host", "example.test"]])
+    with pytest.raises(TypeError, match="name and value"):
+        invalid_pair.send_request("GET", "/", [("Host", "example.test", "extra")])
 
 
 def test_receive_data_accepts_reused_receive_buffer() -> None:
@@ -465,3 +470,186 @@ def test_event_properties_reuse_their_immutable_python_values() -> None:
     body = connection.next_event()
     assert isinstance(body, h11r.Data)
     assert body.data is body.data
+
+
+def test_events_can_be_constructed_and_compared_with_received_events() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(
+        b"POST /items HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        b"3\r\nabc\r\n0\r\nDigest: ok\r\n\r\n"
+    )
+    assert connection.next_event() == h11r.Request(
+        "POST", "/items", [("Host", "x"), ("Transfer-Encoding", "chunked")]
+    )
+    assert connection.next_event() == h11r.Data(
+        b"abc", chunk_start=True, chunk_end=True
+    )
+    assert connection.next_event() == h11r.EndOfMessage([("Digest", "ok")])
+
+    response = h11r.Response(204, reason="No Content")
+    assert (response.status_code, response.reason, response.headers) == (
+        204,
+        b"No Content",
+        (),
+    )
+    assert response.http_version == b"1.1"
+    assert h11r.InformationalResponse(103).status_code == 103
+    with pytest.raises(ValueError, match="1xx"):
+        h11r.InformationalResponse(200)
+    with pytest.raises(ValueError, match="non-1xx"):
+        h11r.Response(100)
+    with pytest.raises(ValueError):
+        h11r.Request("BAD METHOD", "/", [])
+
+
+def test_events_support_repr_and_positional_patterns() -> None:
+    request = h11r.Request("GET", "/", [("Host", "x")])
+    assert repr(request) == (
+        "Request(method=b'GET', target=b'/', headers=Headers([(b'Host', b'x')]), "
+        "http_version=b'1.1')"
+    )
+    assert repr(h11r.Response(200)) == (
+        "Response(status_code=200, reason=b'', headers=Headers([]), http_version=b'1.1')"
+    )
+    assert repr(h11r.InformationalResponse(100)) == (
+        "InformationalResponse(status_code=100, reason=b'', headers=Headers([]), "
+        "http_version=b'1.1')"
+    )
+    assert h11r.InformationalResponse(100) == h11r.InformationalResponse(100)
+    assert repr(h11r.Data(bytearray(b"x"))) == (
+        "Data(data=b'x', chunk_start=False, chunk_end=False)"
+    )
+    assert repr(h11r.EndOfMessage()) == "EndOfMessage(trailers=Headers([]))"
+    assert repr(h11r.ConnectionClosed()) == "ConnectionClosed()"
+
+    match request:
+        case h11r.Request(b"GET", target):
+            assert target == b"/"
+        case _:
+            raise AssertionError("positional pattern did not match")
+    match h11r.Response(404):
+        case h11r.Response(404):
+            pass
+        case _:
+            raise AssertionError("positional pattern did not match")
+
+
+def test_headers_look_up_names_case_insensitively() -> None:
+    request = h11r.Request(
+        "GET", "/", [("Host", "x"), ("X-Tag", "one"), ("x-tag", "two")]
+    )
+    assert request.headers.get_all("x-TAG") == (b"one", b"two")
+    assert request.headers.get(b"X-TAG") == b"one"
+    assert request.headers.get("missing") is None
+    assert request.headers.get("missing", b"") == b""
+    assert request.headers.get_all("missing") == ()
+    assert h11r.Response(200, [("Etag", "v")]).headers.get("ETAG") == b"v"
+    end = h11r.EndOfMessage([("Digest", "ok")])
+    assert end.trailers.get_all("digest") == (b"ok",)
+
+
+def test_headers_behave_like_a_tuple_of_byte_pairs() -> None:
+    pairs = ((b"Host", b"x"), (b"Accept", b"*/*"))
+    headers = h11r.Headers([("Host", "x"), (memoryview(b"Accept"), b"*/*")])
+
+    assert headers == pairs and pairs == headers and headers != list(pairs)
+    assert hash(headers) == hash(pairs)
+    assert headers == h11r.Headers(pairs)
+    assert (len(headers), headers[0], headers[-1], headers[1:]) == (
+        2,
+        pairs[0],
+        pairs[1],
+        pairs[1:],
+    )
+    assert list(headers) == list(pairs)
+    assert (b"Host", b"x") in headers
+    assert not h11r.Headers()
+    assert repr(headers) == "Headers([(b'Host', b'x'), (b'Accept', b'*/*')])"
+    assert copy.deepcopy(headers) == pickle.loads(pickle.dumps(headers)) == pairs
+
+
+def test_headers_can_be_reused_across_sends() -> None:
+    fields = h11r.Headers([("Server", "example")])
+    for _ in range(2):
+        server = h11r.Connection(h11r.Role.SERVER)
+        server.receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        server.next_event()
+        server.next_event()
+        assert (
+            server.send_response(200, fields, body=b"ok")
+            == b"HTTP/1.1 200 \r\nServer: example\r\nContent-Length: 2\r\n\r\nok"
+        )
+    assert fields == ((b"Server", b"example"),)
+
+
+def test_keep_alive_reports_whether_reuse_remains_possible() -> None:
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert isinstance(server.next_event(), h11r.Request)
+    assert server.keep_alive
+
+    closing = h11r.Connection(h11r.Role.SERVER)
+    closing.receive_data(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    assert isinstance(closing.next_event(), h11r.Request)
+    assert not closing.keep_alive
+
+
+def test_client_refuses_reuse_when_unsolicited_bytes_follow_a_response() -> None:
+    # RFC 9112 Section 6.3: a client must not process extra data after a
+    # complete response as a separate response.
+    # https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
+    client = h11r.Connection(h11r.Role.CLIENT)
+    client.send_request("GET", "/", [("Host", "x")])
+    client.end_of_message()
+    client.receive_data(b"HTTP/1.1 204 No Content\r\n\r\nHTTP/1.1 200 OK\r\n\r\n")
+    assert isinstance(client.next_event(), h11r.Response)
+    assert isinstance(client.next_event(), h11r.EndOfMessage)
+    with pytest.raises(h11r.LocalProtocolError):
+        client.start_next_cycle()
+    assert not client.keep_alive
+
+
+def test_body_keyword_sends_a_complete_message_in_one_call() -> None:
+    client = h11r.Connection(h11r.Role.CLIENT)
+    wire = client.send_request("POST", "/items", [("Host", "x")], body=b"hi")
+    assert wire == b"POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi"
+    assert client.local_state is h11r.State.DONE
+
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(wire)
+    assert isinstance(server.next_event(), h11r.Request)
+    assert server.next_event() == h11r.Data(b"hi")
+    assert isinstance(server.next_event(), h11r.EndOfMessage)
+    assert server.send_response(200, body=memoryview(b"ok")) == (
+        b"HTTP/1.1 200 \r\nContent-Length: 2\r\n\r\nok"
+    )
+
+
+def test_rejected_body_keyword_leaves_the_connection_unchanged() -> None:
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert isinstance(server.next_event(), h11r.Request)
+    assert isinstance(server.next_event(), h11r.EndOfMessage)
+    with pytest.raises(h11r.LocalProtocolError):
+        server.send_response(200, [("Content-Length", "5")], body=b"four")
+    assert server.local_state is h11r.State.SEND_RESPONSE
+    assert server.send_response(204, body=b"") == b"HTTP/1.1 204 \r\n\r\n"
+
+
+def test_received_registered_methods_and_versions_are_exact_bytes() -> None:
+    for method in ("TRACE", "PATCH", "PURGE"):
+        server = h11r.Connection(h11r.Role.SERVER)
+        server.receive_data(f"{method} / HTTP/1.0\r\n\r\n".encode())
+        request = server.next_event()
+        assert isinstance(request, h11r.Request)
+        assert (request.method, request.http_version) == (method.encode(), b"1.0")
+
+
+def test_a_successful_connect_response_with_body_keyword_opens_the_tunnel() -> None:
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(
+        b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n"
+    )
+    assert isinstance(server.next_event(), h11r.Request)
+    assert server.send_response(200, body=b"") == b"HTTP/1.1 200 \r\n\r\n"
+    assert server.local_state is h11r.State.SWITCHED_PROTOCOL

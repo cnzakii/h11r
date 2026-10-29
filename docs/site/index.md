@@ -29,6 +29,9 @@ your application keeps control of networking, concurrency, and policy.
 - **Low protocol-layer overhead.** Keep parsing, framing, and connection state
   inexpensive across small requests, streaming bodies, and complete exchanges.
   [Inspect the performance evidence →](#performance-evidence)
+- **Strict about message boundaries.** Reject ambiguous framing, mismatched
+  request targets, and unsolicited response bytes, the inputs behind request
+  smuggling and response desync.
 - **Python-native and precisely typed.** Work with immutable events, Python
   exceptions, and exact annotations in editors and type checkers.
 - **Your I/O stays yours.** Use synchronous sockets, `asyncio`, Trio, test

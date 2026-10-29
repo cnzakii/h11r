@@ -1,5 +1,13 @@
-from collections.abc import Iterable
-from typing import ClassVar, Protocol, TypeAlias, TypeVar, final
+from collections.abc import Iterable, Iterator
+from typing import (
+    ClassVar,
+    Protocol,
+    SupportsIndex,
+    TypeAlias,
+    TypeVar,
+    final,
+    overload,
+)
 
 __version__: str
 
@@ -9,8 +17,8 @@ class _ByteSized(Protocol):
 
 _Buffer: TypeAlias = bytes | bytearray | memoryview
 _DataT = TypeVar("_DataT", bound=_Buffer | _ByteSized)
-_HeaderInput: TypeAlias = Iterable[tuple[_Buffer | str, _Buffer | str]]
-_Headers: TypeAlias = tuple[tuple[bytes, bytes], ...]
+_HeaderInput: TypeAlias = Headers | Iterable[tuple[_Buffer | str, _Buffer | str]]
+_T = TypeVar("_T")
 
 @final
 class Role:
@@ -41,40 +49,88 @@ class RemoteProtocolError(ProtocolError):
     suggested_status_code: int | None
 
 @final
+class Headers:
+    def __new__(cls, fields: _HeaderInput | None = None) -> Headers: ...
+    @overload
+    def get(self, name: _Buffer | str) -> bytes | None: ...
+    @overload
+    def get(self, name: _Buffer | str, default: _T) -> bytes | _T: ...
+    def get_all(self, name: _Buffer | str) -> tuple[bytes, ...]: ...
+    def __len__(self) -> int: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex) -> tuple[bytes, bytes]: ...
+    @overload
+    def __getitem__(self, index: slice) -> tuple[tuple[bytes, bytes], ...]: ...
+    def __iter__(self) -> Iterator[tuple[bytes, bytes]]: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+@final
 class Request:
+    __match_args__: ClassVar[tuple[str, str, str]] = ("method", "target", "headers")
+    def __new__(
+        cls,
+        method: _Buffer | str,
+        target: _Buffer | str,
+        headers: _HeaderInput,
+        *,
+        http_version: _Buffer | str | None = None,
+    ) -> Request: ...
     @property
     def method(self) -> bytes: ...
     @property
     def target(self) -> bytes: ...
     @property
-    def headers(self) -> _Headers: ...
+    def headers(self) -> Headers: ...
     @property
     def http_version(self) -> bytes: ...
 
 @final
 class InformationalResponse:
+    __match_args__: ClassVar[tuple[str, str]] = ("status_code", "headers")
+    def __new__(
+        cls,
+        status_code: int,
+        headers: _HeaderInput | None = None,
+        *,
+        reason: _Buffer | str | None = None,
+        http_version: _Buffer | str | None = None,
+    ) -> InformationalResponse: ...
     @property
     def status_code(self) -> int: ...
     @property
     def reason(self) -> bytes: ...
     @property
-    def headers(self) -> _Headers: ...
+    def headers(self) -> Headers: ...
     @property
     def http_version(self) -> bytes: ...
 
 @final
 class Response:
+    __match_args__: ClassVar[tuple[str, str]] = ("status_code", "headers")
+    def __new__(
+        cls,
+        status_code: int,
+        headers: _HeaderInput | None = None,
+        *,
+        reason: _Buffer | str | None = None,
+        http_version: _Buffer | str | None = None,
+    ) -> Response: ...
     @property
     def status_code(self) -> int: ...
     @property
     def reason(self) -> bytes: ...
     @property
-    def headers(self) -> _Headers: ...
+    def headers(self) -> Headers: ...
     @property
     def http_version(self) -> bytes: ...
 
 @final
 class Data:
+    __match_args__: ClassVar[tuple[str]] = ("data",)
+    def __new__(
+        cls, data: _Buffer, *, chunk_start: bool = False, chunk_end: bool = False
+    ) -> Data: ...
     @property
     def data(self) -> bytes: ...
     @property
@@ -84,9 +140,10 @@ class Data:
 
 @final
 class EndOfMessage:
+    __match_args__: ClassVar[tuple[str]] = ("trailers",)
     def __new__(cls, trailers: _HeaderInput | None = None) -> EndOfMessage: ...
     @property
-    def trailers(self) -> _Headers: ...
+    def trailers(self) -> Headers: ...
 
 @final
 class ConnectionClosed:
@@ -113,6 +170,7 @@ class Connection:
         target: _Buffer | str,
         headers: _HeaderInput,
         *,
+        body: _Buffer | None = None,
         http_version: _Buffer | str | None = None,
     ) -> bytes: ...
     def send_informational_response(
@@ -128,6 +186,7 @@ class Connection:
         status_code: int,
         headers: _HeaderInput | None = None,
         *,
+        body: _Buffer | None = None,
         reason: _Buffer | str | None = None,
         http_version: _Buffer | str | None = None,
     ) -> bytes: ...
@@ -143,6 +202,8 @@ class Connection:
     @property
     def peer_http_version(self) -> bytes | None: ...
     @property
+    def keep_alive(self) -> bool: ...
+    @property
     def client_is_waiting_for_100_continue(self) -> bool: ...
     @property
     def trailing_data(self) -> tuple[bytes, bool]: ...
@@ -154,6 +215,7 @@ __all__ = [
     "ConnectionClosed",
     "Data",
     "EndOfMessage",
+    "Headers",
     "InformationalResponse",
     "LocalProtocolError",
     "ProtocolError",

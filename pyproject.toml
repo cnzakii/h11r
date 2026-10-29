@@ -16,6 +16,7 @@ test = [
 ]
 benchmark = [
     "pyperf>=2.10,<3",
+    "pytest-codspeed>=5,<6",
 ]
 
 # Public site generation and Python API reference.

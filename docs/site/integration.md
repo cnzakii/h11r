@@ -114,7 +114,21 @@ events consume them, so an adapter needs no body accounting of its own.
 ## Write to the transport
 
 Every sending method returns bytes for the transport. The `write_all()`
-placeholder below must preserve the entire value and its order:
+placeholder below must preserve the entire value and its order.
+
+When the whole body is already in memory, pass it as `body=`. One call returns
+the head, body, and end of the message, and adds `Content-Length` when no
+framing field is present and the message may carry content:
+
+```python
+write_all(connection.send_response(200, [("Content-Type", "text/plain")], body=body))
+```
+
+If the body does not fit the framing, for example a body for a `HEAD` response
+or a mismatched `Content-Length`, `LocalProtocolError` is raised and the
+connection is unchanged.
+
+To stream a body instead, send the head, each piece, and the end separately:
 
 ```python
 write_all(
@@ -159,9 +173,11 @@ Before treating an adapter as complete, confirm that it:
 - applies application body, timeout, and concurrency limits;
 - applies high- and low-water marks to `buffered_nbytes` for push-style reads,
   while letting `NEED_DATA` resume them;
-- calls `start_next_cycle()` only when reuse is legal;
+- closes the transport when `keep_alive` is false after an exchange, and
+  otherwise calls `start_next_cycle()`;
 - transfers `trailing_data` when HTTP hands off to another protocol;
-- catches `RemoteProtocolError` separately from local API misuse.
+- catches `RemoteProtocolError` separately from local API misuse and, as a
+  server, may answer it with one final response before closing.
 
 For streaming bodies, buffer-preserving writes, pipelining, and protocol
 handoff, continue to [Advanced usage](advanced.md).

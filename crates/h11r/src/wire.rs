@@ -1,7 +1,7 @@
 //! HTTP/1 wire parsing, message framing, buffering, and serialization.
 
 use crate::{
-    DEFAULT_MAX_HEADER_COUNT, Header, LocalProtocolError, RemoteProtocolError, Request, Response,
+    DEFAULT_MAX_HEADER_COUNT, Headers, LocalProtocolError, RemoteProtocolError, Request, Response,
     Version,
 };
 use crate::{Method, StatusCode, method::is_token_byte};
@@ -22,8 +22,9 @@ pub(crate) enum Chunk {
     Trailers,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum Reader {
+    #[default]
     Head,
     Fixed(usize),
     Chunked(Chunk),
@@ -68,17 +69,31 @@ impl Buffer {
     }
 }
 
-/// Remembers how far an incomplete field section has been searched.
+/// Schedules `httparse` runs over an incomplete field section.
 ///
-/// This is only a retry hint. `httparse` remains the sole syntax authority.
-#[derive(Debug, Default)]
+/// `httparse` remains the sole syntax authority. A section is parsed once its
+/// terminating empty line arrives, and its incomplete prefix is re-parsed each
+/// time the buffer doubles. Invalid bytes are therefore rejected soon after
+/// they arrive, at amortized linear cost under any transport segmentation.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct SectionProgress {
     at: usize,
     line_start: usize,
     started: bool,
+    parsed: usize,
 }
 
 impl SectionProgress {
+    /// Whether the buffered section prefix should be parsed now.
+    pub(crate) fn due(&mut self, data: &[u8], skip_leading_empty: bool) -> bool {
+        let due = self.poll(data, skip_leading_empty).is_some()
+            || data.len() >= self.parsed.saturating_mul(2);
+        if due {
+            self.parsed = data.len();
+        }
+        due
+    }
+
     pub(crate) fn poll(&mut self, data: &[u8], skip_leading_empty: bool) -> Option<usize> {
         while self.at < data.len() {
             self.at += 1;
@@ -107,9 +122,9 @@ pub(crate) fn reader(framing: Framing) -> Reader {
     }
 }
 
+/// Parses a request head from a prefix already capped at the head byte limit.
 pub(crate) fn parse_request_head(
     head: &[u8],
-    max_bytes: usize,
     max_headers: usize,
 ) -> Result<Option<(usize, Request)>, RemoteProtocolError> {
     let mut inline = [MaybeUninit::uninit(); DEFAULT_MAX_HEADER_COUNT];
@@ -134,9 +149,6 @@ pub(crate) fn parse_request_head(
     let httparse::Status::Complete(end) = status else {
         return Ok(None);
     };
-    if end > max_bytes {
-        return Err(remote("HTTP head exceeds max_head_bytes", Some(431)));
-    }
     let http_version = version(parsed.version)?;
     let method = Method::from_bytes(
         parsed
@@ -155,7 +167,7 @@ pub(crate) fn parse_request_head(
         Request {
             method,
             target,
-            headers: copy_headers(parsed.headers, false),
+            headers: copy_headers(head, parsed.headers, false),
             http_version,
         },
     )))
@@ -196,9 +208,9 @@ fn normalize_obs_fold(data: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned(normalized)
 }
 
+/// Parses a response head from a prefix already capped at the head byte limit.
 pub(crate) fn parse_response_head(
     head: &[u8],
-    max_bytes: usize,
     max_headers: usize,
 ) -> Result<Option<(usize, Response)>, RemoteProtocolError> {
     let mut inline = [MaybeUninit::uninit(); DEFAULT_MAX_HEADER_COUNT];
@@ -216,9 +228,6 @@ pub(crate) fn parse_response_head(
     let httparse::Status::Complete(end) = status else {
         return Ok(None);
     };
-    if end > max_bytes {
-        return Err(remote("HTTP head exceeds max_head_bytes", None));
-    }
     let http_version = version(parsed.version)?;
     let status = StatusCode::from_u16(
         parsed
@@ -237,7 +246,7 @@ pub(crate) fn parse_response_head(
                 .get(13..)
                 .unwrap_or_default()
                 .to_vec(),
-            headers: copy_headers(parsed.headers, true),
+            headers: copy_headers(head, parsed.headers, true),
             http_version,
         },
     )))
@@ -265,45 +274,77 @@ pub(crate) fn version(value: Option<u8>) -> Result<Version, RemoteProtocolError>
     }
 }
 
-pub(crate) fn copy_headers(headers: &[httparse::Header<'_>], unfold: bool) -> Vec<Header> {
+/// Copies parsed fields, taking the section bytes that hold them in one copy
+/// when no obs-fold must be normalized.
+pub(crate) fn copy_headers(
+    section: &[u8],
+    headers: &[httparse::Header<'_>],
+    unfold: bool,
+) -> Headers {
+    if !(unfold && headers.iter().any(|header| header.value.contains(&b'\n')))
+        && let Some(copied) = copy_section(section, headers)
+    {
+        return copied;
+    }
+    let mut copied = Headers::with_capacity(
+        headers.len(),
+        headers
+            .iter()
+            .map(|header| header.name.len() + header.value.len())
+            .sum(),
+    );
+    for header in headers {
+        if unfold {
+            copied.push(header.name, normalize_obs_fold(header.value));
+        } else {
+            copied.push(header.name, header.value);
+        }
+    }
+    copied
+}
+
+/// Copies the bytes spanning `headers` in one piece, or returns `None` if a
+/// field does not lie within `section`.
+fn copy_section(section: &[u8], headers: &[httparse::Header<'_>]) -> Option<Headers> {
+    let base = section.as_ptr().addr();
+    let offset = |part: &[u8]| part.as_ptr().addr().checked_sub(base);
+    let start = headers
+        .first()
+        .map_or(Some(0), |first| offset(first.name.as_bytes()))?;
+    let mut fields = Vec::with_capacity(headers.len());
+    let mut end = start;
+    for header in headers {
+        let name = offset(header.name.as_bytes())?.checked_sub(start)?;
+        let value = offset(header.value)?.checked_sub(start)?;
+        end = end.max(start + value + header.value.len());
+        fields.push((
+            name..name + header.name.len(),
+            value..value + header.value.len(),
+        ));
+    }
+    Some(Headers::from_section(section.get(start..end)?, fields))
+}
+
+pub(crate) fn count_header(headers: &Headers, name: &[u8]) -> usize {
+    headers.get_all(name).count()
+}
+
+/// Whether `headers` carry `Transfer-Encoding` or `Content-Length`.
+pub(crate) fn has_framing_fields(headers: &Headers) -> bool {
+    count_header(headers, b"transfer-encoding") + count_header(headers, b"content-length") > 0
+}
+
+pub(crate) fn has_token(headers: &Headers, name: &[u8], token: &[u8]) -> bool {
     headers
-        .iter()
-        .map(|header| {
-            (
-                header.name.as_bytes().to_vec(),
-                if unfold {
-                    normalize_obs_fold(header.value).into_owned()
-                } else {
-                    header.value.to_vec()
-                },
-            )
-        })
-        .collect()
-}
-
-pub(crate) fn header_values<'a>(
-    headers: &'a [Header],
-    name: &'a [u8],
-) -> impl Iterator<Item = &'a [u8]> {
-    headers
-        .iter()
-        .filter(move |(field, _)| field.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_slice())
-}
-
-pub(crate) fn count_header(headers: &[Header], name: &[u8]) -> usize {
-    header_values(headers, name).count()
-}
-
-pub(crate) fn has_token(headers: &[Header], name: &[u8], token: &[u8]) -> bool {
-    header_values(headers, name)
+        .get_all(name)
         .flat_map(|value| value.split(|byte| *byte == b','))
         .any(|value| trim_ows(value).eq_ignore_ascii_case(token))
 }
 
-pub(crate) fn upgrade_protocols(headers: &[Header]) -> Option<Vec<Vec<u8>>> {
+pub(crate) fn upgrade_protocols(headers: &Headers) -> Option<Vec<Vec<u8>>> {
     let present = count_header(headers, b"upgrade") > 0;
-    let protocols = header_values(headers, b"upgrade")
+    let protocols = headers
+        .get_all(b"upgrade")
         .flat_map(|value| value.split(|byte| *byte == b','))
         .map(trim_ows)
         .filter(|value| !value.is_empty())
@@ -328,8 +369,9 @@ fn valid_protocol(value: &[u8]) -> bool {
         && parts.next().is_none()
 }
 
-pub(crate) fn set_connection_close(headers: &mut Vec<Header>) {
-    let mut options = header_values(headers, b"connection")
+pub(crate) fn set_connection_close(headers: &mut Headers) {
+    let mut options = headers
+        .get_all(b"connection")
         .flat_map(|value| value.split(|byte| *byte == b','))
         .map(trim_ows)
         .filter(|value| {
@@ -340,66 +382,73 @@ pub(crate) fn set_connection_close(headers: &mut Vec<Header>) {
         .map(Vec::from)
         .collect::<Vec<_>>();
     options.push(b"close".to_vec());
-    headers.retain(|(name, _)| !name.eq_ignore_ascii_case(b"connection"));
-    headers.push((b"Connection".to_vec(), options.join(&b", "[..])));
+    headers.retain(|name, _| !name.eq_ignore_ascii_case(b"connection"));
+    headers.push(b"Connection", options.join(&b", "[..]));
 }
 
-pub(crate) fn expects_continue(version: Version, headers: &[Header], framing: Framing) -> bool {
+pub(crate) fn expects_continue(version: Version, headers: &Headers, framing: Framing) -> bool {
     version == Version::Http11
         && framing != Framing::Fixed(0)
         && has_token(headers, b"expect", b"100-continue")
 }
 
-pub(crate) fn framing(
-    headers: &[Header],
-    version: Version,
-) -> Result<Framing, RemoteProtocolError> {
-    let transfer = header_values(headers, b"transfer-encoding")
-        .flat_map(|value| value.split(|byte| *byte == b','))
-        .map(trim_ows)
-        .collect::<Vec<_>>();
-    let lengths = header_values(headers, b"content-length")
-        .flat_map(|value| value.split(|byte| *byte == b','))
-        .map(trim_ows)
-        .collect::<Vec<_>>();
-    if !transfer.is_empty() && !lengths.is_empty() {
+pub(crate) fn framing(headers: &Headers, version: Version) -> Result<Framing, RemoteProtocolError> {
+    // Each field value yields at least one comma-separated element, so a
+    // field's presence means its element list is non-empty. Scanning instead
+    // of collecting keeps this per-message path allocation-free.
+    let elements = |name: &'static [u8]| {
+        headers
+            .get_all(name)
+            .flat_map(|value| value.split(|byte| *byte == b','))
+            .map(trim_ows)
+    };
+    let has_transfer = headers.get_all(b"transfer-encoding").next().is_some();
+    let has_length = headers.get_all(b"content-length").next().is_some();
+    if has_transfer && has_length {
         return Err(remote(
             "Transfer-Encoding and Content-Length cannot be combined",
             Some(400),
         ));
     }
-    if !transfer.is_empty() {
+    if has_transfer {
         if version == Version::Http10 {
             return Err(remote(
                 "Transfer-Encoding is not valid HTTP/1.0 framing",
                 Some(400),
             ));
         }
-        if transfer.iter().any(|value| value.is_empty()) {
+        let (mut count, mut any_empty) = (0usize, false);
+        let (mut chunked_before_last, mut other_before_last) = (false, false);
+        let mut last: &[u8] = &[];
+        for coding in elements(b"transfer-encoding") {
+            if count > 0 {
+                if last.eq_ignore_ascii_case(b"chunked") {
+                    chunked_before_last = true;
+                } else {
+                    other_before_last = true;
+                }
+            }
+            any_empty |= coding.is_empty();
+            last = coding;
+            count += 1;
+        }
+        let last_chunked = last.eq_ignore_ascii_case(b"chunked");
+        if any_empty {
             return Err(remote("invalid Transfer-Encoding field", Some(400)));
         }
-        if transfer.len() == 1 && !transfer[0].eq_ignore_ascii_case(b"chunked") {
+        if count == 1 && !last_chunked {
             return Err(remote(
                 "only Transfer-Encoding: chunked is supported",
                 Some(501),
             ));
         }
-        if !transfer
-            .last()
-            .is_some_and(|value| value.eq_ignore_ascii_case(b"chunked"))
-            || transfer[..transfer.len() - 1]
-                .iter()
-                .any(|value| value.eq_ignore_ascii_case(b"chunked"))
-        {
+        if !last_chunked || chunked_before_last {
             return Err(remote(
                 "chunked must be the final transfer coding",
                 Some(400),
             ));
         }
-        if transfer[..transfer.len() - 1]
-            .iter()
-            .any(|value| !value.eq_ignore_ascii_case(b"chunked"))
-        {
+        if other_before_last {
             return Err(remote(
                 "only Transfer-Encoding: chunked is supported",
                 Some(501),
@@ -407,25 +456,25 @@ pub(crate) fn framing(
         }
         return Ok(Framing::Chunked);
     }
-    if lengths.is_empty() {
+    if !has_length {
         return Ok(Framing::Fixed(0));
     }
-    let first =
-        parse_number(lengths[0], 10).ok_or_else(|| remote("invalid Content-Length", Some(400)))?;
-    if lengths
-        .iter()
-        .any(|value| parse_number(value, 10) != Some(first))
-    {
+    let mut lengths = elements(b"content-length");
+    let first = lengths
+        .next()
+        .and_then(|value| parse_number(value, 10))
+        .ok_or_else(|| remote("invalid Content-Length", Some(400)))?;
+    if lengths.any(|value| parse_number(value, 10) != Some(first)) {
         return Err(remote("conflicting Content-Length fields", Some(400)));
     }
     Ok(Framing::Fixed(first))
 }
 
 pub(crate) fn response_framing(
-    headers: &[Header],
+    headers: &Headers,
     version: Version,
 ) -> Result<Framing, RemoteProtocolError> {
-    if count_header(headers, b"transfer-encoding") + count_header(headers, b"content-length") == 0 {
+    if !has_framing_fields(headers) {
         Ok(Framing::CloseDelimited)
     } else {
         framing(headers, version)
@@ -526,16 +575,13 @@ pub(crate) fn incomplete_line_len(data: &[u8], start: usize) -> usize {
         .saturating_sub(start + usize::from(data.last() == Some(&b'\r')))
 }
 
+/// Parses trailers from a prefix already capped at the head byte limit.
 pub(crate) fn parse_trailers(
     data: &[u8],
-    max_bytes: usize,
     max_headers: usize,
     normalize_folding: bool,
-) -> Result<Option<(usize, Vec<Header>)>, RemoteProtocolError> {
+) -> Result<Option<(usize, Headers)>, RemoteProtocolError> {
     let original_end = SectionProgress::default().poll(data, false);
-    if original_end.unwrap_or(data.len()) > max_bytes {
-        return Err(remote("HTTP trailers exceed max_head_bytes", Some(400)));
-    }
     let normalized = if normalize_folding {
         normalize_obs_fold(data)
     } else {
@@ -552,15 +598,15 @@ pub(crate) fn parse_trailers(
     {
         httparse::Status::Complete((parsed_end, headers)) => Ok(Some((
             original_end.unwrap_or(parsed_end),
-            copy_headers(headers, false),
+            copy_headers(&normalized, headers, false),
         ))),
         httparse::Status::Partial => Ok(None),
     }
 }
 
 pub(crate) fn validate_request(request: &Request) -> Result<(), LocalProtocolError> {
-    if !valid_request_target(&request.target) {
-        return Err(local("request target must be non-empty visible ASCII"));
+    if !valid_request_target(request.method.as_bytes(), &request.target) {
+        return Err(local("invalid request target for the request method"));
     }
     validate_headers(&request.headers)?;
     if !valid_host(request.http_version, &request.headers) {
@@ -571,43 +617,80 @@ pub(crate) fn validate_request(request: &Request) -> Result<(), LocalProtocolErr
     Ok(())
 }
 
-pub(crate) fn valid_request_target(target: &[u8]) -> bool {
-    !target.is_empty() && target.iter().all(u8::is_ascii_graphic)
+/// Checks the request-target form allowed for `method`.
+///
+/// CONNECT uses only authority-form with a valid port, asterisk-form is only
+/// for OPTIONS, and other requests use origin-form or absolute-form. No form
+/// has a fragment.
+/// https://www.rfc-editor.org/rfc/rfc9112.html#section-3.2
+/// https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6
+pub(crate) fn valid_request_target(method: &[u8], target: &[u8]) -> bool {
+    if target.is_empty()
+        || !target
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() && *byte != b'#')
+    {
+        return false;
+    }
+    match method {
+        b"CONNECT" => authority_port(target).flatten().is_some_and(valid_tcp_port),
+        _ if target == b"*" => method == b"OPTIONS",
+        _ => target.starts_with(b"/") || has_scheme(target),
+    }
 }
 
-pub(crate) fn valid_host(version: Version, headers: &[Header]) -> bool {
-    let mut hosts = header_values(headers, b"host");
+/// Whether `port` names a TCP port that a tunnel can connect to: 1 to 65535.
+fn valid_tcp_port(port: &[u8]) -> bool {
+    std::str::from_utf8(port)
+        .ok()
+        .and_then(|port| port.parse::<u16>().ok())
+        .is_some_and(|port| port != 0)
+}
+
+/// Whether `target` begins with an RFC 3986 `scheme ":"`.
+fn has_scheme(target: &[u8]) -> bool {
+    target.first().is_some_and(u8::is_ascii_alphabetic)
+        && split_at_byte(target, b':').is_some_and(|(scheme, _)| {
+            scheme
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+        })
+}
+
+pub(crate) fn valid_host(version: Version, headers: &Headers) -> bool {
+    let mut hosts = headers.get_all(b"host");
     let first = hosts.next();
     hosts.next().is_none()
         && match first {
-            Some(value) => valid_authority(value),
+            Some(value) => authority_port(value).is_some(),
             None => version == Version::Http10,
         }
 }
 
-fn valid_authority(value: &[u8]) -> bool {
-    let (host, port) = if value.starts_with(b"[") {
-        let Some(close) = value.iter().position(|byte| *byte == b']') else {
-            return false;
-        };
-        let literal = &value[1..close];
-        if !valid_ip_literal(literal) {
-            return false;
+/// Parses `uri-host [ ":" port ]`, returning the port when one is present.
+fn authority_port(value: &[u8]) -> Option<Option<&[u8]>> {
+    let port = if value.starts_with(b"[") {
+        let close = value.iter().position(|byte| *byte == b']')?;
+        if !valid_ip_literal(&value[1..close]) {
+            return None;
         }
-        match value.get(close + 1..) {
-            Some(b"") => (&value[..=close], None),
-            Some(rest) if rest.starts_with(b":") => (&value[..=close], Some(&rest[1..])),
-            _ => return false,
+        match &value[close + 1..] {
+            b"" => None,
+            rest => Some(rest.strip_prefix(b":")?),
         }
     } else {
         if value.iter().filter(|byte| **byte == b':').count() > 1 {
-            return false;
+            return None;
         }
-        split_at_byte(value, b':').map_or((value, None), |(host, port)| (host, Some(port)))
+        let (host, port) =
+            split_at_byte(value, b':').map_or((value, None), |(host, port)| (host, Some(port)));
+        if !valid_reg_name(host) {
+            return None;
+        }
+        port
     };
-
-    let host_valid = host.starts_with(b"[") || valid_reg_name(host);
-    host_valid && port.is_none_or(|port| port.iter().all(u8::is_ascii_digit))
+    port.is_none_or(|port| port.iter().all(u8::is_ascii_digit))
+        .then_some(port)
 }
 
 fn valid_ip_literal(value: &[u8]) -> bool {
@@ -671,7 +754,7 @@ fn is_sub_delim(byte: u8) -> bool {
     )
 }
 
-pub(crate) fn validate_headers(headers: &[Header]) -> Result<(), LocalProtocolError> {
+pub(crate) fn validate_headers(headers: &Headers) -> Result<(), LocalProtocolError> {
     if headers
         .iter()
         .any(|(name, value)| !valid_name(name) || !valid_value(value))
@@ -698,7 +781,10 @@ pub(crate) fn valid_value(value: &[u8]) -> bool {
     value.is_empty()
         || (value.first().is_some_and(|byte| is_field_vchar(*byte))
             && value.last().is_some_and(|byte| is_field_vchar(*byte))
-            && value.iter().copied().all(is_line_value_byte))
+            // A non-short-circuiting fold lets the compiler vectorize the scan.
+            && value
+                .iter()
+                .fold(true, |valid, byte| valid & is_line_value_byte(*byte)))
 }
 
 pub(crate) fn is_line_value_byte(byte: u8) -> bool {
@@ -709,7 +795,7 @@ fn is_field_vchar(byte: u8) -> bool {
     matches!(byte, b'!'..=b'~' | 0x80..=0xff)
 }
 
-pub(crate) fn validate_trailers(trailers: &[Header]) -> Result<(), LocalProtocolError> {
+pub(crate) fn validate_trailers(trailers: &Headers) -> Result<(), LocalProtocolError> {
     validate_headers(trailers)?;
     if trailers.iter().any(|(name, _)| {
         [
@@ -766,7 +852,7 @@ pub(crate) fn serialize_response(
     version: Version,
     status: StatusCode,
     reason: &[u8],
-    headers: &[Header],
+    headers: &Headers,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(head_len(15 + reason.len(), headers));
     out.extend_from_slice(b"HTTP/");
@@ -786,7 +872,7 @@ pub(crate) fn serialize_response(
     out
 }
 
-fn head_len(start_line: usize, headers: &[Header]) -> usize {
+fn head_len(start_line: usize, headers: &Headers) -> usize {
     start_line
         + headers
             .iter()
@@ -795,7 +881,7 @@ fn head_len(start_line: usize, headers: &[Header]) -> usize {
         + 2
 }
 
-pub(crate) fn write_headers(out: &mut Vec<u8>, headers: &[Header]) {
+pub(crate) fn write_headers(out: &mut Vec<u8>, headers: &Headers) {
     for (name, value) in headers {
         out.extend_from_slice(name);
         out.extend_from_slice(b": ");
@@ -838,9 +924,12 @@ mod tests {
 
     #[test]
     fn request_target_has_a_visible_ascii_boundary() {
-        assert!(!valid_request_target(b""));
+        assert!(!valid_request_target(b"GET", b""));
         for byte in u8::MIN..=u8::MAX {
-            assert_eq!(valid_request_target(&[byte]), byte.is_ascii_graphic());
+            assert_eq!(
+                valid_request_target(b"GET", &[b'/', byte]),
+                byte.is_ascii_graphic() && byte != b'#'
+            );
         }
     }
 }

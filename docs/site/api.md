@@ -5,7 +5,7 @@ description: Public Python API reference for h11r.
 # Python API
 
 The Python package exposes one connection type, immutable protocol events,
-actor roles and states, receive statuses, and protocol errors.
+header fields, actor roles and states, receive statuses, and protocol errors.
 
 API methods operate on protocol state only. Methods that send HTTP return bytes
 for the caller to write; `receive_data()` accepts bytes already read by the
@@ -74,6 +74,15 @@ caller.
     options:
       heading_level: 3
       members: false
+
+## Header fields
+
+::: h11r.Headers
+    options:
+      heading_level: 3
+      members:
+        - get
+        - get_all
 
 ## Errors
 

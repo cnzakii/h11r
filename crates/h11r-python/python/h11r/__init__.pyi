@@ -11,6 +11,9 @@ from ._core import (
     EndOfMessage as EndOfMessage,
 )
 from ._core import (
+    Headers as Headers,
+)
+from ._core import (
     InformationalResponse as InformationalResponse,
 )
 from ._core import (
@@ -46,6 +49,7 @@ __all__ = [
     "ConnectionClosed",
     "Data",
     "EndOfMessage",
+    "Headers",
     "InformationalResponse",
     "LocalProtocolError",
     "ProtocolError",

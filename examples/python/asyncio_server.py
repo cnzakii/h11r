@@ -119,7 +119,6 @@ class AsyncHTTPConnection:
         body: bytes,
         *,
         allow: str | None = None,
-        close: bool = False,
         head_only: bool = False,
     ) -> None:
         """Send one complete, length-delimited response."""
@@ -129,8 +128,6 @@ class AsyncHTTPConnection:
         ]
         if allow is not None:
             headers.append(("Allow", allow))
-        if close:
-            headers.append(("Connection", "close"))
 
         # Keep the three protocol actions visible: response head, body, and
         # message boundary each advance the h11r state machine.
@@ -146,15 +143,6 @@ class AsyncHTTPConnection:
         if body and not head_only:
             await self.write(self.protocol.send_data(body))
         await self.write(self.protocol.end_of_message())
-
-    @property
-    def must_close(self) -> bool:
-        """Whether HTTP semantics forbid another request on this connection."""
-        terminal = (h11r.State.MUST_CLOSE, h11r.State.CLOSED, h11r.State.ERROR)
-        return (
-            self.protocol.local_state in terminal
-            or self.protocol.peer_state in terminal
-        )
 
     async def close(self) -> None:
         self.writer.close()
@@ -191,11 +179,11 @@ async def handle_connection(
                 incoming = await connection.read_request()
             except RequestTooLarge:
                 # Stop reading an oversized body, send a final response, and
-                # close. Reusing the connection would require draining it first.
+                # close. h11r adds Connection: close because the request body
+                # was not fully read.
                 await connection.send_response(
                     413,
                     b"request body too large\n",
-                    close=True,
                 )
                 break
             except TimeoutError:
@@ -204,18 +192,17 @@ async def handle_connection(
                 await connection.send_response(
                     HTTPStatus.REQUEST_TIMEOUT,
                     b"request timeout\n",
-                    close=True,
                 )
                 break
             except h11r.RemoteProtocolError as error:
-                # Remote syntax/state errors carry an HTTP status suggestion.
-                # A final error response is best-effort because the peer may
-                # already have disconnected after sending invalid bytes.
+                # Remote syntax/state errors carry an HTTP status suggestion,
+                # and h11r marks the error response with Connection: close.
+                # It is best-effort because the peer may already have
+                # disconnected after sending invalid bytes.
                 status = error.suggested_status_code or HTTPStatus.BAD_REQUEST
                 await connection.send_response(
                     status,
                     b"invalid HTTP request\n",
-                    close=True,
                 )
                 break
 
@@ -235,7 +222,7 @@ async def handle_connection(
                 head_only=request.method == b"HEAD",
             )
 
-            if connection.must_close:
+            if not connection.protocol.keep_alive:
                 break
 
             # This releases a buffered pipelined request, if one arrived in the

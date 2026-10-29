@@ -54,13 +54,6 @@ def available_events(connection: h11r.Connection) -> Iterator[object]:
         yield event
 
 
-def trailer_value(trailers: Iterable[tuple[bytes, bytes]], name: bytes) -> bytes:
-    values = [value for field, value in trailers if field.lower() == name]
-    if len(values) != 1:
-        raise ValueError(f"expected exactly one {name.decode()} trailer")
-    return values[0]
-
-
 def main() -> None:
     client = h11r.Connection(h11r.Role.CLIENT)
     server = h11r.Connection(h11r.Role.SERVER)
@@ -85,12 +78,9 @@ def main() -> None:
                 received_bytes += len(event.data)
                 print(f"server processed {len(event.data)} body bytes")
             elif isinstance(event, h11r.EndOfMessage):
-                expected = trailer_value(
-                    event.trailers,
-                    b"example-checksum",
-                )
+                expected = event.trailers.get_all("Example-Checksum")
                 actual = server_checksum.hexdigest().encode("ascii")
-                if expected != actual:
+                if expected != (actual,):
                     raise ValueError("upload checksum did not match its trailer")
                 upload_complete = True
                 print("server validated Example-Checksum at EndOfMessage")
