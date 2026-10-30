@@ -164,6 +164,22 @@ def test_asyncio_server_runs_complete_connection_flow() -> None:
             assert error_response.endswith(b"invalid HTTP request\n")
             bad_writer.close()
             await bad_writer.wait_closed()
+
+            # However the upload is segmented, the 413 announces the close.
+            limit = namespace["MAX_REQUEST_BODY"]
+            big_reader, big_writer = await asyncio.open_connection("127.0.0.1", port)
+            big_writer.write(
+                b"POST /echo HTTP/1.1\r\nHost: example.test\r\n"
+                + f"Content-Length: {limit + 1}\r\n\r\n".encode()
+                + b"x" * (limit + 1)
+            )
+            await big_writer.drain()
+            too_large = await big_reader.read()
+            # The reason phrase comes from HTTPStatus, which renamed 413 in 3.13.
+            assert too_large.startswith(b"HTTP/1.1 413 ")
+            assert b"\r\nConnection: close\r\n" in too_large
+            big_writer.close()
+            await big_writer.wait_closed()
         finally:
             server.close()
             await server.wait_closed()

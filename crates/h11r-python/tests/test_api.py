@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import pickle
+from collections.abc import Sequence
 
 import h11r
 import pytest
@@ -64,7 +65,8 @@ def test_request_framing_errors_keep_the_rfc_status_across_python() -> None:
     # https://www.rfc-editor.org/rfc/rfc9112.html#section-6.1
     connection = h11r.Connection(h11r.Role.SERVER)
     connection.receive_data(
-        b"POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: gzip\r\n\r\n"
+        b"POST / HTTP/1.1\r\nHost: example.test\r\n"
+        b"Transfer-Encoding: gzip, chunked\r\n\r\n"
     )
     with pytest.raises(h11r.RemoteProtocolError) as raised:
         connection.next_event()
@@ -430,6 +432,7 @@ def test_limits_and_remote_error_status() -> None:
         assert error.suggested_status_code == 431
     else:
         raise AssertionError("expected RemoteProtocolError")
+    assert h11r.RemoteProtocolError("raised by a caller").suggested_status_code is None
 
 
 def test_events_have_value_equality_and_parts_require_contiguous_data() -> None:
@@ -543,6 +546,9 @@ def test_headers_look_up_names_case_insensitively() -> None:
     assert request.headers.get("missing") is None
     assert request.headers.get("missing", b"") == b""
     assert request.headers.get_all("missing") == ()
+    assert request.headers.get("é", b"") == b""
+    assert request.headers.get_all("é") == ()
+    assert request.headers.get("\udcff", b"") == b""
     assert h11r.Response(200, [("Etag", "v")]).headers.get("ETAG") == b"v"
     end = h11r.EndOfMessage([("Digest", "ok")])
     assert end.trailers.get_all("digest") == (b"ok",)
@@ -563,6 +569,13 @@ def test_headers_behave_like_a_tuple_of_byte_pairs() -> None:
     )
     assert list(headers) == list(pairs)
     assert (b"Host", b"x") in headers
+    assert isinstance(headers, Sequence)
+    assert (headers.index(pairs[1]), headers.count(pairs[0])) == (1, 1)
+    assert headers.index(pairs[1], -(2**100), 2**100) == 1
+    with pytest.raises(ValueError):
+        headers.index((b"Host", b"y"))
+    with pytest.raises(ValueError):
+        headers.index(pairs[0], 1)
     assert not h11r.Headers()
     assert repr(headers) == "Headers([(b'Host', b'x'), (b'Accept', b'*/*')])"
     assert copy.deepcopy(headers) == pickle.loads(pickle.dumps(headers)) == pairs
@@ -653,3 +666,76 @@ def test_a_successful_connect_response_with_body_keyword_opens_the_tunnel() -> N
     assert isinstance(server.next_event(), h11r.Request)
     assert server.send_response(200, body=b"") == b"HTTP/1.1 200 \r\n\r\n"
     assert server.local_state is h11r.State.SWITCHED_PROTOCOL
+
+
+def test_states_and_roles_are_hashable_constants() -> None:
+    finished = {h11r.State.DONE, h11r.State.MUST_CLOSE}
+    assert h11r.State.MUST_CLOSE in finished
+    assert h11r.State.IDLE not in finished
+    assert {h11r.Role.CLIENT: 1}[h11r.Role.CLIENT] == 1
+    assert hash(h11r.ReceiveStatus.NEED_DATA) == hash(h11r.ReceiveStatus.NEED_DATA)
+    assert h11r.State.IDLE != 0
+    assert not hasattr(h11r, "Sequence")
+
+
+@pytest.mark.parametrize("status_code", [-1, 99, 600, 70000, 2**70])
+def test_out_of_range_status_codes_raise_value_error(status_code: int) -> None:
+    with pytest.raises(ValueError, match="between 100 and 599"):
+        h11r.Response(status_code)
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    server.next_event()
+    with pytest.raises(ValueError, match="between 100 and 599"):
+        server.send_response(status_code)
+
+
+def test_lenient_clients_drop_invalid_response_field_lines() -> None:
+    wire = b"HTTP/1.1 200 OK\r\nget-ban/portal.php: x\r\nContent-Length: 0\r\n\r\n"
+    for lenient in (False, True):
+        client = h11r.Connection(h11r.Role.CLIENT, lenient=lenient)
+        client.send_request("GET", "/", [("Host", "example.test")], body=b"")
+        client.receive_data(wire)
+        if not lenient:
+            with pytest.raises(h11r.RemoteProtocolError):
+                client.next_event()
+            continue
+        response = client.next_event()
+        assert isinstance(response, h11r.Response)
+        assert response.headers == ((b"Content-Length", b"0"),)
+        assert isinstance(client.next_event(), h11r.EndOfMessage)
+        assert not client.keep_alive
+
+
+def test_every_state_version_and_status_input_crosses_the_python_boundary() -> None:
+    client = h11r.Connection(h11r.Role.CLIENT)
+    client.send_request(
+        "GET",
+        "/",
+        [("Host", "x"), ("Connection", "upgrade"), ("Upgrade", "demo")],
+        http_version="1.1",
+    )
+    assert client.local_state is h11r.State.SEND_BODY
+    client.end_of_message()
+    assert client.local_state is h11r.State.MIGHT_SWITCH_PROTOCOL
+
+    server = h11r.Connection(h11r.Role.SERVER)
+    server.receive_data(b"GET / HTTP/1.0\r\n\r\n")
+    request = server.next_event()
+    assert isinstance(request, h11r.Request)
+    assert request.http_version == b"1.0"
+    with pytest.raises(h11r.LocalProtocolError):
+        server.send_response(200, http_version=b"1.0", body=b"", reason=b"\r")
+    assert server.send_response(200, http_version=b"1.0", body=b"").startswith(
+        b"HTTP/1.0 200 "
+    )
+
+    with pytest.raises(ValueError, match="http_version"):
+        h11r.Response(200, http_version=b"2.0")
+    with pytest.raises(TypeError):
+        h11r.Response("200")  # type: ignore[arg-type]
+
+    broken = h11r.Connection(h11r.Role.SERVER)
+    broken.receive_data(b"NOT HTTP\r\n\r\n")
+    with pytest.raises(h11r.RemoteProtocolError):
+        broken.next_event()
+    assert broken.peer_state is h11r.State.ERROR

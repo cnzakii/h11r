@@ -120,6 +120,7 @@ class AsyncHTTPConnection:
         *,
         allow: str | None = None,
         head_only: bool = False,
+        close: bool = False,
     ) -> None:
         """Send one complete, length-delimited response."""
         headers = [
@@ -128,6 +129,8 @@ class AsyncHTTPConnection:
         ]
         if allow is not None:
             headers.append(("Allow", allow))
+        if close:
+            headers.append(("Connection", "close"))
 
         # Keep the three protocol actions visible: response head, body, and
         # message boundary each advance the h11r state machine.
@@ -179,11 +182,14 @@ async def handle_connection(
                 incoming = await connection.read_request()
             except RequestTooLarge:
                 # Stop reading an oversized body, send a final response, and
-                # close. h11r adds Connection: close because the request body
-                # was not fully read.
+                # close. The application chooses to close, so it says so: h11r
+                # adds Connection: close itself only while body bytes are still
+                # unread, which is not the case when the limit is crossed by the
+                # final fragment.
                 await connection.send_response(
                     413,
                     b"request body too large\n",
+                    close=True,
                 )
                 break
             except TimeoutError:

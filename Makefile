@@ -25,7 +25,7 @@ test-python:
 # which the address sanitizer cannot build.
 fuzz:
 	host="$$(rustc +nightly -vV | sed -n 's/^host: //p')"; \
-	for target in h11r_receive h11r_fragmentation h11r_send; do \
+	for target in h11r_receive h11r_fragmentation h11r_send h11r_exchange; do \
 		cargo +nightly fuzz run --target "$$host" "$$target" -- -runs=100000 -max_len=4096 || exit 1; \
 	done
 

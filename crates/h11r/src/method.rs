@@ -73,8 +73,8 @@ impl TryFrom<&[u8]> for Method {
 
 impl fmt::Display for Method {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = std::str::from_utf8(self.as_bytes()).map_err(|_| fmt::Error)?;
-        formatter.write_str(value)
+        // A method is a token, so its bytes are ASCII and never replaced.
+        formatter.write_str(&String::from_utf8_lossy(self.as_bytes()))
     }
 }
 

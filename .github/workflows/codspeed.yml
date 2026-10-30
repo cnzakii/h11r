@@ -3,6 +3,10 @@ name: CodSpeed
 # Runs on every main push so pull requests always have a baseline to compare.
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "docs/**"
   push:
     branches: [main]
   workflow_dispatch:
@@ -10,8 +14,10 @@ on:
 permissions:
   contents: read
 
+# A pull request run supersedes its previous one; each main commit keeps its
+# own group so none of them loses its baseline.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
