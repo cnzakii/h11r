@@ -29,13 +29,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Connection::new(Role::Server, Limits::default());
 
     // The client serializes a request head and its (empty) body.
-    let mut wire = client.send_request(&Request {
+    let mut wire = client.send_request(Request {
         method: Method::GET,
         target: b"/hello".to_vec(),
         headers: Headers::from([("Host", "example.test")]),
         http_version: Version::Http11,
     })?;
-    wire.extend(client.end_of_message(&Headers::new())?);
+    wire.extend(client.end_of_message(Headers::new())?);
 
     // The server parses the bytes its transport read.
     server.receive_data(&wire)?;

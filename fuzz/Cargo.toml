@@ -31,3 +31,10 @@ path = "fuzz_targets/h11r_send.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "h11r_exchange"
+path = "fuzz_targets/h11r_exchange.rs"
+test = false
+doc = false
+bench = false

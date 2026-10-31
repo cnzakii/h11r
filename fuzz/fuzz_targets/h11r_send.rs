@@ -64,9 +64,9 @@ fn request_round_trip(control: u8, value: &[u8], body: &[u8]) {
         http_version: Version::Http11,
     };
     let mut sender = Connection::new(Role::Client, Limits::default());
-    let mut wire = sender.send_request(&request).unwrap();
+    let mut wire = sender.send_request(request).unwrap();
     wire.extend(sender.send_data(body).unwrap());
-    wire.extend(sender.end_of_message(&Headers::new()).unwrap());
+    wire.extend(sender.end_of_message(Headers::new()).unwrap());
     decode(
         Connection::new(Role::Server, Limits::default()),
         &wire,
@@ -82,8 +82,8 @@ fn response_round_trip(control: u8, value: &[u8], body: &[u8]) {
         http_version: Version::Http11,
     };
     let mut receiver = Connection::new(Role::Client, Limits::default());
-    let request_wire = receiver.send_request(&request).unwrap();
-    receiver.end_of_message(&Headers::new()).unwrap();
+    let request_wire = receiver.send_request(request).unwrap();
+    receiver.end_of_message(Headers::new()).unwrap();
 
     let chunked = control & 1 != 0;
     let (name, framing_value) = framing(chunked, body.len());
@@ -107,9 +107,9 @@ fn response_round_trip(control: u8, value: &[u8], body: &[u8]) {
         sender.next_event().unwrap(),
         NextEvent::Event(Event::EndOfMessage(_))
     ));
-    let mut wire = sender.send_response(&response).unwrap();
+    let mut wire = sender.send_response(response).unwrap();
     wire.extend(sender.send_data(body).unwrap());
-    wire.extend(sender.end_of_message(&Headers::new()).unwrap());
+    wire.extend(sender.end_of_message(Headers::new()).unwrap());
     decode(receiver, &wire, body);
 }
 

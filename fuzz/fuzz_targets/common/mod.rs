@@ -33,10 +33,13 @@ pub(crate) fn connection(role: Role, control: u8) -> Connection {
         Limits::new(512, 8).unwrap()
     };
     let mut connection = Connection::new(role, limits);
+    if control & 0x20 != 0 {
+        connection = connection.lenient();
+    }
     if role == Role::Client {
-        connection.send_request(&client_request(control)).unwrap();
+        connection.send_request(client_request(control)).unwrap();
         if control & 0x03 == 3 {
-            connection.end_of_message(&Headers::new()).unwrap();
+            connection.end_of_message(Headers::new()).unwrap();
         }
     }
     connection

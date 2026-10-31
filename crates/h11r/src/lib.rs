@@ -87,11 +87,57 @@ pub struct Data<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataParts<T> {
     /// Bytes to write before the body object.
-    pub prefix: Vec<u8>,
+    pub prefix: DataPrefix,
     /// The original body object.
     pub data: T,
     /// Bytes to write after the body object.
-    pub suffix: Vec<u8>,
+    pub suffix: &'static [u8],
+}
+
+/// Framing written before body data: a chunk-size line, or nothing.
+///
+/// It dereferences to its bytes and lives on the stack, so framing a chunk
+/// does not allocate.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub struct DataPrefix {
+    // Sixteen hex digits for any `u64` length plus CRLF.
+    bytes: [u8; 18],
+    len: u8,
+}
+
+impl DataPrefix {
+    pub(crate) fn chunk_size(length: usize) -> Self {
+        let digits = (usize::BITS - length.leading_zeros()).div_ceil(4).max(1) as usize;
+        let mut bytes = [0; 18];
+        for (at, byte) in bytes[..digits].iter_mut().enumerate() {
+            *byte = b"0123456789abcdef"[(length >> (4 * (digits - 1 - at))) & 0xf];
+        }
+        bytes[digits..digits + 2].copy_from_slice(b"\r\n");
+        Self {
+            bytes,
+            len: (digits + 2) as u8,
+        }
+    }
+}
+
+impl std::ops::Deref for DataPrefix {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
+impl AsRef<[u8]> for DataPrefix {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl fmt::Debug for DataPrefix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DataPrefix({:?})", self.escape_ascii().to_string())
+    }
 }
 
 /// The end of one HTTP message, optionally carrying trailer fields.

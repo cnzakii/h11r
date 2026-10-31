@@ -79,7 +79,7 @@ fn public_states_follow_a_complete_reusable_exchange() {
     );
 
     let bytes = server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: b"No Content".to_vec(),
             headers: Headers::new(),
@@ -87,7 +87,7 @@ fn public_states_follow_a_complete_reusable_exchange() {
         })
         .unwrap();
     assert_eq!(bytes, b"HTTP/1.1 204 No Content\r\n\r\n");
-    assert!(server.end_of_message(&Headers::new()).unwrap().is_empty());
+    assert!(server.end_of_message(Headers::new()).unwrap().is_empty());
     assert_eq!(
         (server.local_state(), server.peer_state()),
         (State::Done, State::Done)
@@ -148,14 +148,14 @@ fn incomplete_invalid_heads_have_one_error_across_transport_splits() {
         let run = |chunk_size: usize| {
             let mut client = Connection::new(Role::Client, Limits::default());
             client
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
                     headers: headers([(b"Host", b"example.test")]),
                     http_version: Version::Http11,
                 })
                 .unwrap();
-            client.end_of_message(&Headers::new()).unwrap();
+            client.end_of_message(Headers::new()).unwrap();
             for chunk in wire.chunks(chunk_size) {
                 client.receive_data(chunk).unwrap();
                 if let Err(error) = client.next_event() {
@@ -272,14 +272,14 @@ fn independent_inbound_limits_are_segmentation_invariant() {
 
     let mut client = Connection::new(Role::Client, Limits::new(8, 10).unwrap());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client.receive_data(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
     assert_eq!(
         client.next_event().unwrap_err().suggested_status_code(),
@@ -294,7 +294,7 @@ fn send_framing_and_end_of_message_are_explicit() {
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1
     let mut client = Connection::new(Role::Client, Limits::default());
     let head = client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/upload".to_vec(),
             headers: headers([
@@ -311,7 +311,7 @@ fn send_framing_and_end_of_message_are_explicit() {
     assert_eq!(client.send_data(b"abc").unwrap(), b"3\r\nabc\r\n");
     assert_eq!(
         client
-            .end_of_message(&headers([(b"Digest", b"ok")]))
+            .end_of_message(headers([(b"Digest", b"ok")]))
             .unwrap(),
         b"0\r\nDigest: ok\r\n\r\n"
     );
@@ -323,7 +323,7 @@ fn data_parts_preserve_the_callers_body_object() {
     // owned by the connection while the body object passes through unchanged.
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x"), (b"Transfer-Encoding", b"chunked")]),
@@ -332,9 +332,15 @@ fn data_parts_preserve_the_callers_body_object() {
         .unwrap();
     let body = b"payload".to_vec();
     let parts = client.send_data_parts(body).unwrap();
-    assert_eq!(parts.prefix, b"7\r\n");
+    assert_eq!(&*parts.prefix, b"7\r\n");
     assert_eq!(parts.data, b"payload");
     assert_eq!(parts.suffix, b"\r\n");
+    for (length, size_line) in [
+        (0x1_0000, b"10000\r\n".as_slice()),
+        (usize::MAX, format!("{:x}\r\n", usize::MAX).as_bytes()),
+    ] {
+        assert_eq!(&*client.send_data_framing(length).unwrap().0, size_line);
+    }
 }
 
 #[test]
@@ -345,7 +351,7 @@ fn only_status_100_clears_continue_waiting() {
     // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.1
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/".to_vec(),
             headers: headers([
@@ -388,7 +394,7 @@ fn continue_waiting_is_gated_by_the_request_http_version() {
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         client
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(b"POST").unwrap(),
                 target: b"/".to_vec(),
                 headers: headers([
@@ -427,14 +433,14 @@ fn rfc_body_length_precedence_and_incomplete_eof() {
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n")
         .unwrap();
@@ -442,14 +448,14 @@ fn rfc_body_length_precedence_and_incomplete_eof() {
 
     let mut close_delimited = Connection::new(Role::Client, Limits::default());
     close_delimited
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    close_delimited.end_of_message(&Headers::new()).unwrap();
+    close_delimited.end_of_message(Headers::new()).unwrap();
     close_delimited
         .receive_data(b"HTTP/1.1 200 OK\r\n\r\nbody")
         .unwrap();
@@ -519,14 +525,14 @@ fn content_length_and_no_body_response_framing_follow_the_ordered_algorithm() {
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         client
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(method).unwrap(),
                 target: b"/".to_vec(),
                 headers: headers([(b"Host", b"x")]),
                 http_version: Version::Http11,
             })
             .unwrap();
-        client.end_of_message(&Headers::new()).unwrap();
+        client.end_of_message(Headers::new()).unwrap();
         let mut wire = format!("HTTP/1.1 {status} Test\r\n").into_bytes();
         wire.extend_from_slice(fields);
         wire.extend_from_slice(b"\r\nnext");
@@ -538,34 +544,34 @@ fn content_length_and_no_body_response_framing_follow_the_ordered_algorithm() {
 }
 
 #[test]
-fn unsupported_request_transfer_coding_suggests_not_implemented() {
-    // RFC 9112 Section 6.1 recommends 501 when a server does not understand a
-    // request transfer coding. A non-final chunked coding is malformed framing
-    // instead and remains a 400.
+fn request_transfer_codings_without_final_chunked_are_bad_requests() {
+    // RFC 9112 Section 6.3 item 4: a request whose final transfer coding is
+    // not chunked has no reliable length and MUST get a 400. Section 6.1
+    // recommends 501 for an unsupported coding before a final chunked one.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.1
-    for fields in [
-        b"Transfer-Encoding: gzip\r\n".as_slice(),
-        b"Transfer-Encoding: gzip, chunked\r\n",
+    for (codings, status) in [
+        (b"gzip".as_slice(), 400),
+        (b"chunked, gzip", 400),
+        (b"chunked, chunked", 400),
+        (b"gzip, chunked", 501),
     ] {
-        let mut wire = b"POST / HTTP/1.1\r\nHost: x\r\n".to_vec();
-        wire.extend_from_slice(fields);
-        wire.extend_from_slice(b"\r\n");
         let mut server = Connection::new(Role::Server, Limits::default());
-        server.receive_data(&wire).unwrap();
+        server
+            .receive_data(
+                &[
+                    b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: ",
+                    codings,
+                    b"\r\n\r\n",
+                ]
+                .concat(),
+            )
+            .unwrap();
         assert_eq!(
             server.next_event().unwrap_err().suggested_status_code(),
-            Some(501)
+            Some(status)
         );
     }
-
-    let mut server = Connection::new(Role::Server, Limits::default());
-    server
-        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, gzip\r\n\r\n")
-        .unwrap();
-    assert_eq!(
-        server.next_event().unwrap_err().suggested_status_code(),
-        Some(400)
-    );
 }
 
 #[test]
@@ -584,7 +590,7 @@ fn expect_continue_is_sent_only_when_request_content_will_follow() {
         let mut client = Connection::new(Role::Client, Limits::default());
         assert!(
             client
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"POST").unwrap(),
                     target: b"/".to_vec(),
                     headers,
@@ -610,14 +616,14 @@ fn pipeline_pauses_until_both_sides_start_the_next_cycle() {
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     assert_eq!(server.next_event().unwrap(), NextEvent::Paused);
     server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: vec![],
             headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
-    server.end_of_message(&Headers::new()).unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
 }
@@ -650,7 +656,7 @@ fn accepted_upgrade_exposes_trailing_protocol_bytes() {
     // https://www.rfc-editor.org/rfc/rfc9110.html#section-7.8
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/chat".to_vec(),
             headers: headers([
@@ -661,7 +667,7 @@ fn accepted_upgrade_exposes_trailing_protocol_bytes() {
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: next-protocol\r\n\r\nprotocol-data")
         .unwrap();
@@ -705,7 +711,7 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
         assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
         assert!(
             server
-                .send_informational_response(&Response {
+                .send_informational_response(Response {
                     status: StatusCode::from_u16(101).unwrap(),
                     reason: b"Switching Protocols".to_vec(),
                     headers,
@@ -721,8 +727,8 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
         b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: other-protocol\r\n\r\n",
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
-        client.send_request(&request).unwrap();
-        client.end_of_message(&Headers::new()).unwrap();
+        client.send_request(request.clone()).unwrap();
+        client.end_of_message(Headers::new()).unwrap();
         client.receive_data(wire).unwrap();
         assert!(client.next_event().is_err());
         assert_eq!(client.peer_state(), State::Error);
@@ -735,7 +741,7 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
         let mut client = Connection::new(Role::Client, Limits::default());
         assert!(
             client
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
                     headers,
@@ -759,16 +765,20 @@ fn upgrade_negotiation_enforces_required_headers_and_response_order() {
         headers: headers([(b"Connection", b"Upgrade"), (b"Upgrade", b"next-protocol")]),
         http_version: Version::Http11,
     };
-    assert!(server.send_informational_response(&switching).is_err());
+    assert!(
+        server
+            .send_informational_response(switching.clone())
+            .is_err()
+    );
     server
-        .send_informational_response(&Response {
+        .send_informational_response(Response {
             status: StatusCode::from_u16(100).unwrap(),
             reason: b"Continue".to_vec(),
             headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
-    assert!(server.send_informational_response(&switching).is_ok());
+    assert!(server.send_informational_response(switching).is_ok());
 }
 
 #[test]
@@ -792,7 +802,7 @@ fn send_rejects_status_line_injection_and_forbidden_framing_fields() {
     ] {
         assert!(
             server
-                .send_response(&Response {
+                .send_response(Response {
                     status: StatusCode::from_u16(status).unwrap(),
                     reason: reason.to_vec(),
                     headers,
@@ -805,35 +815,56 @@ fn send_rejects_status_line_injection_and_forbidden_framing_fields() {
 }
 
 #[test]
-fn http10_messages_are_close_only_even_with_a_legacy_keep_alive_token() {
-    // RFC 9112 Section 9.3 permits HTTP/1.0 persistence only through a legacy
-    // option with additional recipient constraints. This engine parses 1.0
-    // messages but deliberately does not implement that optional mechanism.
+fn http10_messages_persist_only_with_the_legacy_keep_alive_option() {
+    // RFC 9112 Section 9.3: an HTTP/1.0 connection persists when the message
+    // carries the `keep-alive` option, and only while each response has a
+    // known length and says `keep-alive` itself, as mainstream servers do.
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-9.3
-    let mut server = Connection::new(Role::Server, Limits::default());
-    server
-        .receive_data(b"GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")
-        .unwrap();
-    assert!(matches!(event(&mut server), Event::Request(_)));
-    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
-    assert_eq!(server.peer_state(), State::MustClose);
+    let server = |connection: &[u8]| {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server
+            .receive_data(&[b"GET / HTTP/1.0\r\n", connection, b"\r\n"].concat())
+            .unwrap();
+        assert!(matches!(event(&mut server), Event::Request(_)));
+        assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+        server
+    };
+    let mut kept = server(b"Connection: keep-alive\r\n");
+    assert_eq!(kept.peer_state(), State::Done);
+    assert_eq!(
+        kept.send_response_with_body(response(200, Headers::new()), b"ok")
+            .unwrap(),
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok"
+    );
+    kept.start_next_cycle().unwrap();
+
+    // Without a length the body ends at close, so the connection cannot persist.
+    let mut unframed = server(b"Connection: keep-alive\r\n");
+    assert_eq!(
+        unframed
+            .send_response(response(200, Headers::new()))
+            .unwrap(),
+        b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+    );
+    assert_eq!(server(b"").peer_state(), State::MustClose);
 
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.0 204 No Content\r\nConnection: keep-alive\r\n\r\n")
         .unwrap();
     assert!(matches!(event(&mut client), Event::Response(_)));
     assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
-    assert_eq!(client.peer_state(), State::MustClose);
+    assert_eq!(client.peer_state(), State::Done);
+    client.start_next_cycle().unwrap();
 }
 
 #[test]
@@ -846,7 +877,7 @@ fn http10_peer_never_gets_automatic_chunked_framing() {
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     let head = server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(200).unwrap(),
             reason: b"OK".to_vec(),
             headers: Headers::new(),
@@ -855,8 +886,40 @@ fn http10_peer_never_gets_automatic_chunked_framing() {
         .unwrap();
     assert_eq!(head, b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
     assert_eq!(server.send_data(b"body").unwrap(), b"body");
-    assert!(server.end_of_message(&Headers::new()).unwrap().is_empty());
+    assert!(server.end_of_message(Headers::new()).unwrap().is_empty());
     assert_eq!(server.local_state(), State::MustClose);
+
+    // Framing is checked as for HTTP/1.1 before it is dropped, and bodyless
+    // metadata only as response framing.
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server.receive_data(b"HEAD / HTTP/1.0\r\n\r\n").unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    let head = server
+        .send_response(Response {
+            status: StatusCode::from_u16(200).unwrap(),
+            reason: Vec::new(),
+            headers: headers([(b"Transfer-Encoding", b"gzip, chunked")]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    assert_eq!(head, b"HTTP/1.1 200 \r\nConnection: close\r\n\r\n");
+
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server.receive_data(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(
+        server
+            .send_response(Response {
+                status: StatusCode::from_u16(200).unwrap(),
+                reason: Vec::new(),
+                headers: headers([
+                    (b"Transfer-Encoding", b"chunked"),
+                    (b"Content-Length", b"4")
+                ]),
+                http_version: Version::Http11,
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -872,7 +935,7 @@ fn responses_normalize_the_connection_close_signal() {
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     assert_eq!(
         server
-            .send_response(&Response {
+            .send_response(Response {
                 status: StatusCode::from_u16(204).unwrap(),
                 reason: b"No Content".to_vec(),
                 headers: headers([(b"Connection", b"keep-alive")]),
@@ -885,7 +948,7 @@ fn responses_normalize_the_connection_close_signal() {
     let mut early = Connection::new(Role::Server, Limits::default());
     assert_eq!(
         early
-            .send_response(&Response {
+            .send_response(Response {
                 status: StatusCode::from_u16(408).unwrap(),
                 reason: b"Request Timeout".to_vec(),
                 headers: headers([(b"Content-Length", b"0")]),
@@ -909,7 +972,7 @@ fn request_target_forms_round_trip() {
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         let wire = client
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(method).unwrap(),
                 target: target.to_vec(),
                 headers: headers([(b"Host", b"example.test")]),
@@ -936,7 +999,7 @@ fn request_target_rejects_bytes_outside_its_field_boundary() {
         b"/bad\xff",
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
-        let result = client.send_request(&Request {
+        let result = client.send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: target.to_vec(),
             headers: headers([(b"Host", b"example.test")]),
@@ -959,10 +1022,12 @@ fn host_field_uses_uri_host_and_optional_port_grammar() {
         b"example.test:8080",
         b"127.0.0.1",
         b"[2001:db8::1]:443",
+        b"[v1.fe80::a+b]",
+        b"ex%41mple.test",
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         client
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(b"GET").unwrap(),
                 target: b"/".to_vec(),
                 headers: headers([(b"Host", host)]),
@@ -979,11 +1044,15 @@ fn host_field_uses_uri_host_and_optional_port_grammar() {
         b"[not-an-address]",
         b"example.test:80:80",
         b"example.test:not-a-port",
+        b"[v.x]",
+        b"[v1.]",
+        b"ex%4",
+        b"ex%zzmple.test",
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         assert!(
             client
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
                     headers: headers([(b"Host", host)]),
@@ -1033,7 +1102,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
         let mut with_name = Connection::new(Role::Client, Limits::default());
         assert_eq!(
             with_name
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
                     headers: headers([(b"Host", b"x"), (&[byte], b"value")]),
@@ -1047,7 +1116,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
         let mut with_value = Connection::new(Role::Client, Limits::default());
         assert_eq!(
             with_value
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
                     headers: headers([(b"Host", b"x"), (b"X-Test", &[byte])]),
@@ -1061,7 +1130,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
         let mut with_reason = Connection::new(Role::Server, Limits::default());
         assert_eq!(
             with_reason
-                .send_response(&Response {
+                .send_response(Response {
                     status: StatusCode::from_u16(204).unwrap(),
                     reason: vec![byte],
                     headers: Headers::new(),
@@ -1074,7 +1143,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
 
         let mut from_peer = Connection::new(Role::Client, Limits::default());
         from_peer
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(b"GET").unwrap(),
                 target: b"/".to_vec(),
                 headers: headers([(b"Host", b"x")]),
@@ -1109,7 +1178,7 @@ fn token_field_value_and_reason_phrase_have_distinct_octet_grammars() {
         let mut client = Connection::new(Role::Client, Limits::default());
         assert!(
             client
-                .send_request(&Request {
+                .send_request(Request {
                     method: Method::from_bytes(b"GET").unwrap(),
                     target: b"/".to_vec(),
                     headers: headers([(b"Host", b"x"), (b"X-Test", value)]),
@@ -1144,6 +1213,9 @@ fn chunk_extensions_are_ignored_only_after_validating_their_grammar() {
         b"1;foo=\r\n",
         b"1;foo=\"unterminated\r\n",
         b"1;foo=a b\r\n",
+        b"1;foo bar\r\n",
+        b"1;foo=\"\x01\"\r\n",
+        b"1;foo=\"\\\x01\"\r\n",
         b"1;\0\r\n",
     ] {
         let mut wire = prefix.to_vec();
@@ -1193,7 +1265,7 @@ fn sender_rejects_core_fields_that_cannot_be_trailers() {
     ] {
         let mut client = Connection::new(Role::Client, Limits::default());
         client
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(b"POST").unwrap(),
                 target: b"/".to_vec(),
                 headers: headers([(b"Host", b"x"), (b"Transfer-Encoding", b"chunked")]),
@@ -1201,7 +1273,7 @@ fn sender_rejects_core_fields_that_cannot_be_trailers() {
             })
             .unwrap();
         assert!(
-            client.end_of_message(&headers([(name, b"value")])).is_err(),
+            client.end_of_message(headers([(name, b"value")])).is_err(),
             "trailer {name:?}"
         );
         assert_eq!(client.local_state(), State::SendBody);
@@ -1216,14 +1288,14 @@ fn response_obs_fold_is_normalized_but_request_obs_fold_is_rejected() {
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-5.2
     let mut client = Connection::new(Role::Client, Limits::new(65536, 1).unwrap());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 204 No Content\r\nX-Test: one\r\n two\t\r\n\r\n")
         .unwrap();
@@ -1234,14 +1306,14 @@ fn response_obs_fold_is_normalized_but_request_obs_fold_is_rejected() {
 
     let mut first_line = Connection::new(Role::Client, Limits::default());
     first_line
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    first_line.end_of_message(&Headers::new()).unwrap();
+    first_line.end_of_message(Headers::new()).unwrap();
     first_line
         .receive_data(b"HTTP/1.1 204 No Content\r\n X-Test: hidden\r\n\r\n")
         .unwrap();
@@ -1249,14 +1321,14 @@ fn response_obs_fold_is_normalized_but_request_obs_fold_is_rejected() {
 
     let mut trailers = Connection::new(Role::Client, Limits::new(65536, 1).unwrap());
     trailers
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    trailers.end_of_message(&Headers::new()).unwrap();
+    trailers.end_of_message(Headers::new()).unwrap();
     trailers
         .receive_data(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-Test: one\r\n two\r\n\r\n",
@@ -1326,14 +1398,14 @@ fn parser_accepted_lf_is_preserved_for_heads_and_trailers() {
 
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 204 All Good\nX-Test: one\n two\t\n\n")
         .unwrap();
@@ -1366,14 +1438,14 @@ fn connection_close_disables_reuse_when_sent_by_either_actor() {
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-9.3
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x"), (b"Connection", b"close")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 204 No Content\r\n\r\n")
         .unwrap();
@@ -1389,14 +1461,14 @@ fn connection_close_disables_reuse_when_sent_by_either_actor() {
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: b"No Content".to_vec(),
             headers: headers([(b"Connection", b"close")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    server.end_of_message(&Headers::new()).unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     assert_eq!(server.local_state(), State::MustClose);
     assert!(server.start_next_cycle().is_err());
 }
@@ -1415,14 +1487,14 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
 
     let mut inbound_response = Connection::new(Role::Client, Limits::default());
     inbound_response
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([(b"Host", b"x")]),
             http_version: Version::Http11,
         })
         .unwrap();
-    inbound_response.end_of_message(&Headers::new()).unwrap();
+    inbound_response.end_of_message(Headers::new()).unwrap();
     inbound_response
         .receive_data(b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
         .unwrap();
@@ -1431,7 +1503,7 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
     let mut outbound_request = Connection::new(Role::Client, Limits::default());
     assert!(
         outbound_request
-            .send_request(&Request {
+            .send_request(Request {
                 method: Method::from_bytes(b"POST").unwrap(),
                 target: b"/".to_vec(),
                 headers: headers([(b"Transfer-Encoding", b"chunked")]),
@@ -1451,7 +1523,7 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
         Event::EndOfMessage(_)
     ));
     let head = outbound_response
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(200).unwrap(),
             reason: b"OK".to_vec(),
             headers: headers([(b"Transfer-Encoding", b"chunked")]),
@@ -1462,7 +1534,7 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
     assert_eq!(outbound_response.send_data(b"body").unwrap(), b"body");
     assert!(
         outbound_response
-            .end_of_message(&Headers::new())
+            .end_of_message(Headers::new())
             .unwrap()
             .is_empty()
     );
@@ -1482,7 +1554,7 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
             Event::EndOfMessage(_)
         ));
         let head = http10_response
-            .send_response(&Response {
+            .send_response(Response {
                 status: StatusCode::from_u16(200).unwrap(),
                 reason: b"OK".to_vec(),
                 headers,
@@ -1493,7 +1565,7 @@ fn transfer_encoding_is_gated_by_the_peer_http_version() {
         assert_eq!(http10_response.send_data(b"body").unwrap(), b"body");
         assert!(
             http10_response
-                .end_of_message(&Headers::new())
+                .end_of_message(Headers::new())
                 .unwrap()
                 .is_empty()
         );
@@ -1515,14 +1587,14 @@ fn eof_preserves_complete_pipelined_messages_already_in_the_buffer() {
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(204).unwrap(),
             reason: vec![],
             headers: Headers::new(),
             http_version: Version::Http11,
         })
         .unwrap();
-    server.end_of_message(&Headers::new()).unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
 
     let Event::Request(request) = event(&mut server) else {
@@ -1651,14 +1723,17 @@ fn rejected_connect_cannot_reuse_the_h11r_connection() {
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
-    server.send_response(&response).unwrap();
-    server.end_of_message(&Headers::new()).unwrap();
+    assert_eq!(
+        server.send_response(response).unwrap(),
+        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    server.end_of_message(Headers::new()).unwrap();
     assert_eq!(server.local_state(), State::MustClose);
     assert!(server.start_next_cycle().is_err());
 
     let mut client = Connection::new(Role::Client, Limits::default());
-    client.send_request(&request).unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.send_request(request).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
         .unwrap();
@@ -1727,8 +1802,8 @@ fn client_refuses_reuse_when_bytes_follow_the_response() {
     // complete response as a separate response.
     // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
     let mut client = Connection::new(Role::Client, Limits::default());
-    client.send_request(&get(b"/a")).unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.send_request(get(b"/a")).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     client
         .receive_data(
             b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\naHTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nforged",
@@ -1744,7 +1819,7 @@ fn client_refuses_reuse_when_bytes_follow_the_response() {
         (client.local_state(), client.peer_state()),
         (State::MustClose, State::MustClose)
     );
-    assert!(client.send_request(&get(b"/b")).is_err());
+    assert!(client.send_request(get(b"/b")).is_err());
 }
 
 #[test]
@@ -1758,7 +1833,7 @@ fn informational_responses_are_never_sent_to_http10_clients() {
             .receive_data(b"POST / HTTP/1.0\r\nContent-Length: 1\r\nExpect: 100-continue\r\n\r\n")
             .unwrap();
         assert!(matches!(event(&mut server), Event::Request(_)));
-        let result = server.send_informational_response(&Response {
+        let result = server.send_informational_response(Response {
             status: StatusCode::from_u16(status).unwrap(),
             reason: vec![],
             headers: Headers::new(),
@@ -1781,7 +1856,7 @@ fn http10_upgrade_proposals_are_ignored() {
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     assert_eq!(server.peer_state(), State::MustClose);
-    let switch = server.send_informational_response(&Response {
+    let switch = server.send_informational_response(Response {
         status: StatusCode::from_u16(101).unwrap(),
         reason: vec![],
         headers: headers([(b"Connection", b"upgrade"), (b"Upgrade", b"websocket")]),
@@ -1814,14 +1889,14 @@ fn chunk_extension_bytes_are_bounded_per_message() {
             }
         }
         server
-            .send_response(&Response {
+            .send_response(Response {
                 status: StatusCode::from_u16(204).unwrap(),
                 reason: vec![],
                 headers: Headers::new(),
                 http_version: Version::Http11,
             })
             .unwrap();
-        server.end_of_message(&Headers::new()).unwrap();
+        server.end_of_message(Headers::new()).unwrap();
         server.start_next_cycle().unwrap();
     }
 
@@ -1869,7 +1944,7 @@ fn request_target_form_depends_on_the_method() {
         };
         let mut client = Connection::new(Role::Client, Limits::default());
         assert_eq!(
-            client.send_request(&request).is_ok(),
+            client.send_request(request).is_ok(),
             valid,
             "send {target:?}"
         );
@@ -1902,7 +1977,7 @@ fn final_response_before_the_request_body_ends_announces_close() {
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
     let bytes = server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(413).unwrap(),
             reason: b"Content Too Large".to_vec(),
             headers: headers([(b"Content-Length", b"0")]),
@@ -1913,7 +1988,7 @@ fn final_response_before_the_request_body_ends_announces_close() {
         bytes,
         b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
-    server.end_of_message(&Headers::new()).unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     assert_eq!(server.local_state(), State::MustClose);
 }
 
@@ -1937,7 +2012,7 @@ fn keep_alive_reports_whether_the_connection_can_be_reused() {
 
     let mut client = Connection::new(Role::Client, Limits::default());
     client
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"GET").unwrap(),
             target: b"/".to_vec(),
             headers: headers([
@@ -1948,7 +2023,7 @@ fn keep_alive_reports_whether_the_connection_can_be_reused() {
             http_version: Version::Http11,
         })
         .unwrap();
-    client.end_of_message(&Headers::new()).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
     assert!(client.keep_alive());
     client
         .receive_data(
@@ -1976,7 +2051,7 @@ fn error_response_after_a_peer_protocol_error_announces_close() {
     assert_eq!(error.suggested_status_code(), Some(400));
     assert!(!server.keep_alive());
     let bytes = server
-        .send_response(&Response {
+        .send_response(Response {
             status: StatusCode::from_u16(400).unwrap(),
             reason: b"Bad Request".to_vec(),
             headers: headers([(b"Content-Length", b"0")]),
@@ -2102,6 +2177,11 @@ fn a_response_after_all_request_content_arrived_keeps_the_connection() {
             b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc",
             2,
         ),
+        // The content is buffered though not yet polled.
+        (
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc",
+            1,
+        ),
     ] {
         let mut server = Connection::new(Role::Server, Limits::default());
         server.receive_data(wire).unwrap();
@@ -2114,7 +2194,7 @@ fn a_response_after_all_request_content_arrived_keeps_the_connection() {
                 .unwrap(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
         );
-        assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+        while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
         server.start_next_cycle().unwrap();
     }
 }
@@ -2172,7 +2252,7 @@ fn connect_trace_and_reset_content_messages_carry_no_content() {
             let mut client = Connection::new(Role::Client, Limits::default());
             assert!(
                 client
-                    .send_request(&request(method, target, Some(framing)))
+                    .send_request(request(method, target, Some(framing)))
                     .is_err()
             );
         }
@@ -2184,8 +2264,44 @@ fn connect_trace_and_reset_content_messages_carry_no_content() {
         );
         assert_eq!(client.local_state(), State::Idle);
         client
-            .send_request(&request(method, target, Some((b"Content-Length", b"0"))))
+            .send_request(request(method, target, Some((b"Content-Length", b"0"))))
             .unwrap();
+    }
+
+    for (head, framing, valid) in [
+        (
+            b"TRACE / HTTP/1.1".as_slice(),
+            b"Content-Length: 1".as_slice(),
+            false,
+        ),
+        (
+            b"CONNECT example.test:443 HTTP/1.1",
+            b"Transfer-Encoding: chunked",
+            false,
+        ),
+        (
+            b"CONNECT example.test:443 HTTP/1.1",
+            b"Content-Length: 0",
+            true,
+        ),
+    ] {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server
+            .receive_data(
+                &[
+                    head,
+                    b"\r\nHost: example.test:443\r\n",
+                    framing,
+                    b"\r\n\r\n",
+                ]
+                .concat(),
+            )
+            .unwrap();
+        match server.next_event() {
+            Ok(NextEvent::Event(Event::Request(_))) => assert!(valid),
+            Err(error) => assert!(!valid && error.suggested_status_code() == Some(400)),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     let server = || {
@@ -2200,14 +2316,19 @@ fn connect_trace_and_reset_content_messages_carry_no_content() {
     let mut streaming = server();
     assert_eq!(
         streaming
-            .send_response(&response(205, Headers::new()))
+            .send_response(response(205, Headers::new()))
             .unwrap(),
         b"HTTP/1.1 205 OK\r\nContent-Length: 0\r\n\r\n"
     );
     assert!(streaming.send_data(b"x").is_err());
     assert!(
         server()
-            .send_response(&response(205, headers([(b"Content-Length", b"3")])))
+            .send_response(response(205, headers([(b"Content-Length", b"0")])))
+            .is_ok()
+    );
+    assert!(
+        server()
+            .send_response(response(205, headers([(b"Content-Length", b"3")])))
             .is_err()
     );
     assert!(
@@ -2229,15 +2350,669 @@ fn an_http11_response_without_framing_fields_is_chunked() {
     event(&mut server);
     event(&mut server);
     assert_eq!(
-        server
-            .send_response(&response(200, Headers::new()))
-            .unwrap(),
+        server.send_response(response(200, Headers::new())).unwrap(),
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
     );
     assert_eq!(server.send_data(b"abc").unwrap(), b"3\r\nabc\r\n");
-    assert_eq!(
-        server.end_of_message(&Headers::new()).unwrap(),
-        b"0\r\n\r\n"
-    );
+    assert_eq!(server.end_of_message(Headers::new()).unwrap(), b"0\r\n\r\n");
     assert!(server.keep_alive());
+}
+
+#[test]
+fn a_response_that_ends_keep_alive_says_so_on_the_wire() {
+    // RFC 9110 Section 15.5.9: a server sending 408 on an idle connection
+    // SHOULD send `close`. Answering before any request ends keep-alive in
+    // the state machine, and the head must announce it.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-15.5.9
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    event(&mut server);
+    event(&mut server);
+    server
+        .send_response_with_body(response(200, Headers::new()), b"")
+        .unwrap();
+    server.start_next_cycle().unwrap();
+    assert_eq!(
+        server
+            .send_response_with_body(response(408, Headers::new()), b"")
+            .unwrap(),
+        b"HTTP/1.1 408 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    assert_eq!(server.local_state(), State::MustClose);
+}
+
+#[test]
+fn empty_lines_before_eof_are_a_clean_close() {
+    // RFC 9112 Section 2.2: a server SHOULD ignore at least one empty line
+    // received before a request-line, such as a stray CRLF after a POST body.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-2.2
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\na\r\n")
+        .unwrap();
+    event(&mut server);
+    event(&mut server);
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+    server
+        .send_response_with_body(response(200, Headers::new()), b"")
+        .unwrap();
+    server.start_next_cycle().unwrap();
+    server.receive_data(b"").unwrap();
+    assert!(matches!(event(&mut server), Event::ConnectionClosed));
+    assert_eq!(server.trailing_data(), (b"".as_slice(), true));
+
+    // Empty lines beyond the head limit fail it whether or not they were
+    // polled before EOF.
+    for poll_first in [false, true] {
+        let mut server = Connection::new(Role::Server, Limits::new(4, 100).unwrap());
+        server.receive_data(b"\r\n\r\n\r\n").unwrap();
+        if poll_first {
+            assert!(server.next_event().is_err());
+            continue;
+        }
+        server.receive_data(b"").unwrap();
+        assert_eq!(
+            server.next_event().unwrap_err().suggested_status_code(),
+            Some(431)
+        );
+    }
+
+    // A lone CR is not an empty line, so it stays a truncated head.
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server.receive_data(b"\r\n\r").unwrap();
+    server.receive_data(b"").unwrap();
+    assert!(server.next_event().is_err());
+}
+
+#[test]
+fn only_chunked_messages_carry_trailers() {
+    // RFC 9112 Section 7.1.2: trailer fields follow chunked content.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1.2
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    event(&mut server);
+    event(&mut server);
+    server
+        .send_response(response(200, headers([(b"Content-Length", b"0")])))
+        .unwrap();
+    let error = server
+        .end_of_message(headers([(b"Example-Checksum", b"x")]))
+        .unwrap_err();
+    assert!(error.to_string().contains("chunked"), "{error}");
+}
+
+#[test]
+fn response_transfer_codings_without_final_chunked_end_at_close() {
+    // RFC 9112 Section 6.3 item 4: a response whose final transfer coding is
+    // not chunked is read until the server closes. Codings before a final
+    // chunked one stay in the body for the caller, as the field shows.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3
+    for (codings, wire_body, close) in [
+        (b"gzip".as_slice(), b"coded".as_slice(), true),
+        (b"gzip, chunked", b"5\r\ncoded\r\n0\r\n\r\n", false),
+    ] {
+        let mut client = Connection::new(Role::Client, Limits::default());
+        client.send_request(get(b"/")).unwrap();
+        client.end_of_message(Headers::new()).unwrap();
+        client
+            .receive_data(
+                &[
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: ",
+                    codings,
+                    b"\r\n\r\n",
+                    wire_body,
+                ]
+                .concat(),
+            )
+            .unwrap();
+        assert!(matches!(event(&mut client), Event::Response(_)));
+        let Event::Data(data) = event(&mut client) else {
+            panic!("expected body data");
+        };
+        assert_eq!(data.data, b"coded");
+        if close {
+            client.receive_data(b"").unwrap();
+        }
+        assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+        assert_eq!(client.keep_alive(), !close);
+    }
+}
+
+#[test]
+fn a_request_line_beyond_the_head_limit_is_uri_too_long() {
+    // RFC 9112 Section 3: a server receiving a request-target longer than it
+    // wishes to parse MUST respond with 414.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-3
+    for (wire, status) in [
+        (b"GET /very/long/target HTTP/1.1\r\n".as_slice(), 414),
+        (b"GET / HTTP/1.1\r\nHost: example.test\r\n", 431),
+    ] {
+        let mut server = Connection::new(Role::Server, Limits::new(16, 100).unwrap());
+        server.receive_data(wire).unwrap();
+        assert_eq!(
+            server.next_event().unwrap_err().suggested_status_code(),
+            Some(status)
+        );
+    }
+}
+
+#[test]
+fn transfer_coding_lists_split_only_outside_quoted_parameters() {
+    // RFC 9110 Section 10.1.4: a transfer-coding may carry parameters whose
+    // quoted values contain commas. RFC 9112 Sections 6.1 and 6.3: a request
+    // with an unsupported coding is a 501; a malformed list is a 400.
+    // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.4
+    for (codings, status) in [
+        (b"x; p=\"a,chunked,b\", chunked".as_slice(), 501),
+        (b"x; p=\"a,,b\" , chunked", 501),
+        (b"x;p=1;q=\"\\\"\", chunked", 501),
+        (b"gzip garbage, chunked", 400),
+        (b"x; p=\"open, chunked", 400),
+        (b"x; p=, chunked", 400),
+        (b"chunked; q=1", 400),
+    ] {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server
+            .receive_data(
+                &[
+                    b"POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: ",
+                    codings,
+                    b"\r\n\r\n",
+                ]
+                .concat(),
+            )
+            .unwrap();
+        assert_eq!(
+            server.next_event().unwrap_err().suggested_status_code(),
+            Some(status),
+            "{}",
+            String::from_utf8_lossy(codings)
+        );
+    }
+}
+
+#[test]
+fn faulty_framing_on_a_bodyless_response_ends_the_connection() {
+    // RFC 9112 Section 6.1: an HTTP/1.0 message with Transfer-Encoding has
+    // faulty framing and the connection closes after it. Section 6.3 item 3:
+    // so does a message with both Transfer-Encoding and Content-Length. A
+    // response without content does not exempt the connection.
+    // https://www.rfc-editor.org/rfc/rfc9112.html#section-6.1
+    for (method, head) in [
+        (
+            b"GET".as_slice(),
+            b"HTTP/1.0 103 Early Hints\r\nTransfer-Encoding: chunked\r\n\r\n\
+              HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n"
+                .as_slice(),
+        ),
+        (
+            b"HEAD",
+            b"HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n"
+                .as_slice(),
+        ),
+        (
+            b"GET",
+            b"HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
+        ),
+    ] {
+        let mut client = Connection::new(Role::Client, Limits::default());
+        let mut request = get(b"/");
+        request.method = Method::from_bytes(method).unwrap();
+        client.send_request(request).unwrap();
+        client.end_of_message(Headers::new()).unwrap();
+        client.receive_data(head).unwrap();
+        if let Event::InformationalResponse(_) = event(&mut client) {
+            assert!(matches!(event(&mut client), Event::Response(_)));
+        }
+        assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+        assert!(!client.keep_alive());
+        assert!(client.start_next_cycle().is_err());
+    }
+}
+
+#[test]
+fn lenient_clients_accept_response_heads_mainstream_clients_tolerate() {
+    // RFC 9112 Sections 4 and 5.1 leave these response defects to the client.
+    // A strict connection rejects them; a lenient one accepts them, and does
+    // not reuse a connection whose response had a field line dropped.
+    for (head, kept, reason, reusable) in [
+        (
+            b"HTTP/1.1 200 OK\r\nget-ban/portal.php: x\r\nContent-Length: 0\r\n\r\n".as_slice(),
+            1,
+            b"OK".as_slice(),
+            false,
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length : 0\r\n\r\n",
+            1,
+            b"OK",
+            true,
+        ),
+        (
+            b"HTTP/1.1  200  OK\r\nContent-Length: 0\r\n\r\n",
+            1,
+            b"OK",
+            true,
+        ),
+        // A whitespace-led line before the first field is dropped, not folded.
+        (
+            b"HTTP/1.1 200 OK\r\n Content-Length: 45\r\nContent-Length: 0\r\n\r\n",
+            1,
+            b"OK",
+            false,
+        ),
+        // Only SP delimits; an HTAB belongs to the reason.
+        (
+            b"HTTP/1.1  200 \tOK\r\nContent-Length: 0\r\n\r\n",
+            1,
+            b"\tOK",
+            true,
+        ),
+    ] {
+        let exchange = |lenient: bool| {
+            let mut client = Connection::new(Role::Client, Limits::default());
+            if lenient {
+                client = client.lenient();
+            }
+            client.send_request(get(b"/")).unwrap();
+            client.end_of_message(Headers::new()).unwrap();
+            client.receive_data(head).unwrap();
+            client
+        };
+        assert!(exchange(false).next_event().is_err());
+        let mut client = exchange(true);
+        let Event::Response(response) = event(&mut client) else {
+            panic!("expected a response");
+        };
+        assert_eq!(
+            (response.headers.len(), &response.reason[..]),
+            (kept, reason)
+        );
+        assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+        assert_eq!(client.keep_alive(), reusable);
+    }
+
+    // Well-formed heads that are not one line per field drop nothing.
+    for head in [
+        b"HTTP/1.1 200 OK\r\nX: a\r\n b\r\nContent-Length: 0\r\n\r\n".as_slice(),
+        b"\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nX: a \t\r\nY:\r\nContent-Length: 0\r\n\r\n",
+        b"HTTP/1.1 200 OK\nX: a\nContent-Length: 0\n\n",
+        b"HTTP/1.1 200 OK\r\nX: a\r\n \r\nContent-Length: 0\r\n\r\n",
+        b"HTTP/1.1 200 OK\nX: a\n\t\nContent-Length: 0\n\n",
+        b"HTTP/1.1 204 No Content\r\n\r\n",
+    ] {
+        let mut client = Connection::new(Role::Client, Limits::default()).lenient();
+        client.send_request(get(b"/")).unwrap();
+        client.end_of_message(Headers::new()).unwrap();
+        client.receive_data(head).unwrap();
+        assert!(matches!(event(&mut client), Event::Response(_)));
+        assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+        assert!(client.keep_alive(), "{head:?}");
+    }
+
+    // Requests stay strict.
+    let mut server = Connection::new(Role::Server, Limits::default()).lenient();
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\nbad/name: x\r\n\r\n")
+        .unwrap();
+    assert!(server.next_event().is_err());
+}
+
+#[test]
+fn bytes_received_before_a_request_never_answer_it() {
+    // RFC 9112 Section 9.2: bytes with no outstanding request are not a
+    // response, however long the caller waits before polling them.
+    let forged = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let mut fresh = Connection::new(Role::Client, Limits::default());
+    fresh.receive_data(forged).unwrap();
+    assert!(fresh.send_request(get(b"/")).is_err());
+    assert!(fresh.next_event().is_err());
+
+    let mut reused = Connection::new(Role::Client, Limits::default());
+    reused.send_request(get(b"/")).unwrap();
+    reused.end_of_message(Headers::new()).unwrap();
+    reused.receive_data(forged).unwrap();
+    assert!(matches!(event(&mut reused), Event::Response(_)));
+    assert!(matches!(event(&mut reused), Event::EndOfMessage(_)));
+    reused.start_next_cycle().unwrap();
+    reused.receive_data(forged).unwrap();
+    assert!(reused.send_request(get(b"/")).is_err());
+}
+
+#[test]
+fn a_client_does_not_reuse_a_connection_the_server_closed() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client.send_request(get(b"/")).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
+    client
+        .receive_data(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        .unwrap();
+    client.receive_data(b"").unwrap();
+    assert!(matches!(event(&mut client), Event::Response(_)));
+    assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+    assert!(!client.keep_alive());
+    assert!(client.start_next_cycle().is_err());
+}
+
+#[test]
+fn trailer_parsing_stops_at_the_end_of_the_message() {
+    // A whitespace-led line after the message is not a folded trailer, so
+    // completion does not depend on how the bytes were segmented.
+    let wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n x";
+    for split in [wire.len() - 2, wire.len()] {
+        let mut client = Connection::new(Role::Client, Limits::default());
+        client.send_request(get(b"/")).unwrap();
+        client.end_of_message(Headers::new()).unwrap();
+        client.receive_data(&wire[..split]).unwrap();
+        assert!(matches!(event(&mut client), Event::Response(_)));
+        assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+        client.receive_data(&wire[split..]).unwrap();
+        assert_eq!(client.trailing_data().0, b" x");
+    }
+}
+
+#[test]
+fn a_peer_error_poisons_every_later_poll() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server.receive_data(b"NOT HTTP\r\n\r\n").unwrap();
+    assert!(server.next_event().is_err());
+    assert!(server.next_event().is_err());
+    assert_eq!(server.peer_state(), State::Error);
+}
+
+#[test]
+fn a_close_delimited_response_waits_for_eof() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client.send_request(get(b"/")).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
+    client.receive_data(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+    assert!(matches!(event(&mut client), Event::Response(_)));
+    assert_eq!(client.next_event().unwrap(), NextEvent::NeedData);
+    client.receive_data(b"ab").unwrap();
+    assert_eq!(event(&mut client), Event::Data(data(b"ab", false, false)));
+    assert_eq!(client.next_event().unwrap(), NextEvent::NeedData);
+    client.receive_data(b"").unwrap();
+    assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+    assert_eq!(event(&mut client), Event::ConnectionClosed);
+}
+
+#[test]
+fn the_head_limit_bounds_trailers_and_complete_chunk_lines() {
+    let limits = Limits::new(64, 10).unwrap();
+    let head = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let long = [b'a'; 80];
+    for body in [
+        [b"0\r\nX: ".as_slice(), &long, b"\r\n\r\n"].concat(),
+        [b"1;".as_slice(), &long, b"\r\nx\r\n0\r\n\r\n"].concat(),
+    ] {
+        let mut server = Connection::new(Role::Server, limits);
+        server.receive_data(head).unwrap();
+        assert!(matches!(event(&mut server), Event::Request(_)));
+        server.receive_data(&body).unwrap();
+        assert_eq!(
+            server.next_event().unwrap_err().suggested_status_code(),
+            Some(400)
+        );
+    }
+}
+
+#[test]
+fn send_methods_require_the_matching_role_and_status() {
+    let status = |code| StatusCode::from_u16(code).unwrap();
+    let response = |code| Response {
+        status: status(code),
+        reason: Vec::new(),
+        headers: Headers::new(),
+        http_version: Version::Http11,
+    };
+    let mut client = Connection::new(Role::Client, Limits::default());
+    assert!(client.send_informational_response(response(100)).is_err());
+    assert!(client.send_response(response(200)).is_err());
+
+    let mut server = Connection::new(Role::Server, Limits::default());
+    assert!(server.send_request(get(b"/")).is_err());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(server.send_informational_response(response(200)).is_err());
+    assert!(server.send_response(response(100)).is_err());
+    assert_eq!(server.local_state(), State::SendResponse);
+}
+
+#[test]
+fn a_request_after_an_early_server_response_is_rejected() {
+    // A server may answer before any request, for example to reject the
+    // connection, but that response does not answer a later request.
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .send_response_with_body(
+            Response {
+                status: StatusCode::from_u16(400).unwrap(),
+                reason: Vec::new(),
+                headers: Headers::new(),
+                http_version: Version::Http11,
+            },
+            b"",
+        )
+        .unwrap();
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    assert!(server.next_event().is_err());
+}
+
+#[test]
+fn an_invalid_content_length_stays_invalid_whatever_follows() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: x\r\nContent-Length: 1\r\n\r\n",
+        )
+        .unwrap();
+    assert_eq!(
+        server.next_event().unwrap_err().suggested_status_code(),
+        Some(400)
+    );
+}
+
+#[test]
+fn public_value_types_convert_display_and_close() {
+    for method in [Method::PUT, Method::DELETE, Method::PATCH] {
+        assert_eq!(Method::try_from(method.as_bytes()), Ok(method));
+    }
+    assert_eq!(Method::from_bytes(b"M'X").unwrap().to_string(), "M'X");
+    assert!(
+        Method::from_bytes(b"")
+            .unwrap_err()
+            .to_string()
+            .contains("token")
+    );
+    let status = StatusCode::try_from(404).unwrap();
+    assert_eq!((u16::from(status), status.to_string()), (404, "404".into()));
+    assert!(
+        StatusCode::from_u16(600)
+            .unwrap_err()
+            .to_string()
+            .contains("599")
+    );
+    assert!(
+        Limits::new(0, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("non-zero")
+    );
+
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client
+        .send_request(Request {
+            method: Method::POST,
+            target: b"/".to_vec(),
+            headers: headers([(b"Host", b"x"), (b"Transfer-Encoding", b"chunked")]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    let parts = client.send_data_parts(b"hello").unwrap();
+    assert_eq!(
+        (parts.prefix.as_ref(), parts.suffix),
+        (b"5\r\n".as_slice(), b"\r\n".as_slice())
+    );
+    assert_eq!(format!("{:?}", parts.prefix), r#"DataPrefix("5\\r\\n")"#);
+    assert_eq!(client.peer_http_version(), None);
+    client.end_of_message(Headers::new()).unwrap();
+    client.close().unwrap();
+    assert_eq!(client.local_state(), State::Closed);
+}
+
+#[test]
+fn header_count_limits_above_the_inline_slots_are_honored() {
+    let limits = Limits::new(64 * 1024, 150).unwrap();
+    let fields: Vec<u8> = (0..120)
+        .flat_map(|at| format!("X-{at}: v\r\n").into_bytes())
+        .collect();
+
+    let mut server = Connection::new(Role::Server, limits);
+    server
+        .receive_data(
+            &[
+                b"GET / HTTP/1.1\r\nHost: x\r\n".as_slice(),
+                &fields,
+                b"\r\n",
+            ]
+            .concat(),
+        )
+        .unwrap();
+    let Event::Request(request) = event(&mut server) else {
+        panic!("expected a request");
+    };
+    assert_eq!(request.headers.len(), 121);
+
+    let mut client = Connection::new(Role::Client, limits);
+    client.send_request(get(b"/")).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
+    client
+        .receive_data(
+            &[
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n".as_slice(),
+                &fields,
+                b"\r\n0\r\n",
+                &fields,
+                b"\r\n",
+            ]
+            .concat(),
+        )
+        .unwrap();
+    let Event::Response(response) = event(&mut client) else {
+        panic!("expected a response");
+    };
+    assert_eq!(response.headers.len(), 121);
+    let Event::EndOfMessage(end) = event(&mut client) else {
+        panic!("expected the end of the message");
+    };
+    assert_eq!(end.trailers.len(), 120);
+}
+
+#[test]
+fn received_values_outside_their_grammar_are_rejected() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client.send_request(get(b"/")).unwrap();
+    client.end_of_message(Headers::new()).unwrap();
+    // RFC 9110 Section 15: status codes are 100 through 599.
+    client.receive_data(b"HTTP/1.1 600 X\r\n\r\n").unwrap();
+    assert!(client.next_event().is_err());
+
+    for (request, valid) in [
+        // RFC 3986 Section 3.1: a scheme may contain "+", "-", and ".".
+        (b"GET svn+ssh.x-y://x/ HTTP/1.1\r\nHost: x\r\n\r\n".as_slice(), true),
+        // RFC 9110 Section 5.6.4: a quoted string may hold obs-text.
+        (b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1;a=\"\x80\"\r\nx\r\n0\r\n\r\n", true),
+        // RFC 3986 Section 3.1: "_" is not a scheme character.
+        (b"GET a_b://x/ HTTP/1.1\r\nHost: x\r\n\r\n", false),
+        // RFC 9110 Section 7.2: only ":" port may follow an IP-literal.
+        (b"GET / HTTP/1.1\r\nHost: [::1]x\r\n\r\n", false),
+    ] {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        server.receive_data(request).unwrap();
+        let outcome = (0..4).try_for_each(|_| server.next_event().map(drop));
+        assert_eq!(outcome.is_ok(), valid, "{}", request.escape_ascii());
+    }
+}
+
+#[test]
+fn local_messages_outside_their_grammar_are_rejected() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    assert!(client.send_data_parts(b"x").is_err());
+    let mut upgrade = get(b"/");
+    upgrade.headers.push(b"Connection", b"upgrade");
+    upgrade.headers.push(b"Upgrade", b"a@b");
+    // RFC 9110 Section 7.8: a protocol is a token with an optional version.
+    assert!(client.send_request(upgrade).is_err());
+
+    let response = |code, reason: &[u8], headers| Response {
+        status: StatusCode::from_u16(code).unwrap(),
+        reason: reason.to_vec(),
+        headers,
+        http_version: Version::Http11,
+    };
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    for informational in [
+        response(100, b"", headers([(b"bad name", b"x")])),
+        response(100, b"a\r\nb", Headers::new()),
+    ] {
+        assert!(server.send_informational_response(informational).is_err());
+    }
+    let invalid_length = headers([(b"Content-Length", b"x")]);
+    assert!(
+        server
+            .send_response(response(205, b"", invalid_length))
+            .is_err()
+    );
+    server
+        .send_response(response(200, b"", Headers::new()))
+        .unwrap();
+    // A zero-length chunk would end the message, so empty data writes nothing.
+    assert_eq!(server.send_data(b"").unwrap(), b"");
+}
+
+#[test]
+fn local_events_outside_the_local_state_are_rejected() {
+    let response = |code, headers| Response {
+        status: StatusCode::from_u16(code).unwrap(),
+        reason: Vec::new(),
+        headers,
+        http_version: Version::Http11,
+    };
+    let sized = || headers([(b"Content-Length", b"1")]);
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    server.send_response(response(200, sized())).unwrap();
+    assert!(server.close().is_err());
+    let informational = response(100, Headers::new());
+    assert!(server.send_informational_response(informational).is_err());
+    assert!(server.send_response(response(200, sized())).is_err());
+    assert_eq!(server.local_state(), State::SendBody);
+
+    // RFC 9110 Section 9.3.6: a 2xx answer to CONNECT ends the HTTP message
+    // exchange, so the tunnel carries no body and no message end.
+    let mut tunnel = Connection::new(Role::Server, Limits::default());
+    tunnel
+        .receive_data(b"CONNECT x:443 HTTP/1.1\r\nHost: x:443\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut tunnel), Event::Request(_)));
+    tunnel.send_response(response(200, Headers::new())).unwrap();
+    assert!(tunnel.send_data(b"").is_err());
+    assert!(tunnel.end_of_message(Headers::new()).is_err());
+    assert_eq!(tunnel.local_state(), State::SwitchedProtocol);
 }

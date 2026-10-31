@@ -50,6 +50,8 @@ cache-keys = [
     { file = "pyproject.toml" },
     { file = "Cargo.toml" },
     { file = "src/**/*.rs" },
+    { file = "../h11r/Cargo.toml" },
+    { file = "../h11r/src/**/*.rs" },
     { file = "../../Cargo.toml" },
     { file = "../../Cargo.lock" },
 ]

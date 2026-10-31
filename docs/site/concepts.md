@@ -85,8 +85,9 @@ cycle are complete and reuse remains legal.
 
 After each exchange, check `keep_alive`. When it is false, close the transport
 instead of calling `start_next_cycle()`. It becomes false when either message
-asks to close, either message uses HTTP/1.0, a protocol error occurs, or HTTP
-hands the connection to another protocol.
+asks to close, an HTTP/1.0 message lacks `Connection: keep-alive`, a body ends
+at close, a client receives EOF, a protocol error occurs, or HTTP hands the
+connection to another protocol.
 
 Pipelined bytes may already be buffered. `h11r` returns `PAUSED` until the
 current response is complete, preserving request and response order. After
@@ -124,6 +125,28 @@ transport splits it. Application body limits, timeouts, concurrency limits, and
 transport back-pressure remain the caller's responsibility. Bytes received
 while `next_event()` returns `PAUSED` also stay buffered until the caller acts
 on them.
+
+## Strict and lenient parsing
+
+By default `h11r` is exactly as strict as RFC 9110 and RFC 9112: it rejects
+what they forbid and accepts what they require recipients to accept, such as
+empty list elements. Some servers send response heads that break the syntax
+in ways browsers and mainstream clients tolerate. A client can accept those:
+
+```python
+connection = h11r.Connection(h11r.Role.CLIENT, lenient=True)
+```
+
+A lenient connection, for received responses only:
+
+- drops field lines that are not valid fields, such as a name containing `/`;
+- accepts whitespace between a field name and its colon;
+- accepts more than one space between status-line elements.
+
+A connection that drops a field line is not reused, since the dropped line may
+have been a framing field. Requests are never parsed leniently: a server that
+tolerates malformed requests can frame them differently from another server
+on the path, which enables request smuggling.
 
 With those ownership and ordering rules in place, continue to
 [Build a transport adapter](integration.md) and apply them to an existing

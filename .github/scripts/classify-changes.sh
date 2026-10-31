@@ -1,5 +1,7 @@
 #!/bin/sh
 
+set -eu
+
 classify() {
     code=false
     docs=false
@@ -23,7 +25,8 @@ classify() {
         esac
 
         case "$path" in
-            docs/griffe_runtime_docstrings.py)
+            # The crate README is also the crate documentation and doctests.
+            crates/h11r/README.md | docs/griffe_runtime_docstrings.py)
                 code=true
                 ;;
             .agents/* | .github/ISSUE_TEMPLATE/* | .readthedocs.yaml | docs/* | \
@@ -50,6 +53,8 @@ docs=true"
     test "$(printf '%s\n' docs/griffe_runtime_docstrings.py | classify)" = "code=true
 docs=true"
     test "$(printf '%s\n' crates/h11r/src/lib.rs | classify)" = "code=true
+docs=false"
+    test "$(printf '%s\n' crates/h11r/README.md | classify)" = "code=true
 docs=false"
     test "$(printf '%s\n' Cargo.toml | classify)" = "code=true
 docs=true"

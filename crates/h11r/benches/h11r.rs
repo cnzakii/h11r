@@ -102,15 +102,15 @@ fn reusable_cycle(connection: &mut Connection, reply: &Response) {
     connection.receive_data(black_box(REQUEST)).unwrap();
     black_box(connection.next_event().unwrap());
     black_box(connection.next_event().unwrap());
-    black_box(connection.send_response(reply).unwrap());
-    black_box(connection.end_of_message(&Headers::new()).unwrap());
+    black_box(connection.send_response(reply.clone()).unwrap());
+    black_box(connection.end_of_message(Headers::new()).unwrap());
     connection.start_next_cycle().unwrap();
 }
 
 fn client_with_fixed_body() -> Connection {
     let mut connection = Connection::new(Role::Client, Limits::default());
     connection
-        .send_request(&Request {
+        .send_request(Request {
             method: Method::from_bytes(b"POST").unwrap(),
             target: b"/upload".to_vec(),
             headers: headers([(b"Host", b"example.test"), (b"Content-Length", b"65536")]),
@@ -120,15 +120,23 @@ fn client_with_fixed_body() -> Connection {
     connection
 }
 
+fn server_awaiting_response() -> Connection {
+    let mut connection = Connection::new(Role::Server, Limits::default());
+    connection.receive_data(REQUEST).unwrap();
+    connection.next_event().unwrap();
+    connection.next_event().unwrap();
+    connection
+}
+
 fn server_exchange(reply: &Response) -> [Vec<u8>; 3] {
     let mut connection = Connection::new(Role::Server, Limits::default());
     connection.receive_data(black_box(REQUEST)).unwrap();
     black_box(connection.next_event().unwrap());
     black_box(connection.next_event().unwrap());
     [
-        connection.send_response(reply).unwrap(),
+        connection.send_response(reply.clone()).unwrap(),
         connection.send_data(BODY).unwrap(),
-        connection.end_of_message(&Headers::new()).unwrap(),
+        connection.end_of_message(Headers::new()).unwrap(),
     ]
 }
 
@@ -239,19 +247,33 @@ fn benchmarks(c: &mut Criterion) {
 
     let mut body = c.benchmark_group("common/send_body_64k");
     body.throughput(Throughput::Bytes(LARGE_BODY.len() as u64));
+    // The connection is dropped outside the timing, which would otherwise
+    // dominate the few nanoseconds `parts` takes.
     body.bench_function("copy", |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             client_with_fixed_body,
-            |mut connection| black_box(connection.send_data(black_box(LARGE_BODY)).unwrap()),
+            |connection| black_box(connection.send_data(black_box(LARGE_BODY)).unwrap()),
             BatchSize::SmallInput,
         )
     });
     body.bench_function("parts", |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             client_with_fixed_body,
-            |mut connection| black_box(connection.send_data_parts(black_box(LARGE_BODY)).unwrap()),
+            |connection| black_box(connection.send_data_parts(black_box(LARGE_BODY)).unwrap()),
             BatchSize::SmallInput,
         )
+    });
+    // The output is dropped inside the timed loop, as a server does after
+    // writing it, so allocations are reused as they are in practice.
+    body.bench_function("complete_response", |b| {
+        b.iter(|| {
+            let mut connection = server_awaiting_response();
+            black_box(
+                connection
+                    .send_response_with_body(response(200, Headers::new()), black_box(LARGE_BODY))
+                    .unwrap(),
+            );
+        })
     });
     body.finish();
 

@@ -6,6 +6,13 @@ User-visible changes to h11r are recorded here.
 
 ### Added
 
+- Lenient parsing: `Connection(role, lenient=True)` (Rust:
+  `Connection::new(role, limits).lenient()`) accepts received response heads
+  that break HTTP syntax in ways mainstream clients tolerate. Invalid field
+  lines, such as a name containing `/`, are dropped; whitespace before a
+  field's colon and between status-line elements is accepted. A connection
+  that drops a field line is not reused. Requests are never parsed leniently,
+  and the default stays exactly as strict as RFC 9110 and RFC 9112.
 - `Connection.keep_alive` (Rust `Connection::keep_alive()`) reports whether
   HTTP may continue on the connection after the current exchange, so an adapter
   no longer reconstructs that rule from both actor states.
@@ -13,9 +20,10 @@ User-visible changes to h11r are recorded here.
   support positional `match` patterns such as `case h11r.Response(404)`.
 - `h11r.Headers` holds header and trailer fields. It behaves like a tuple of
   `(name, value)` byte pairs and adds `get(name)` and `get_all(name)`, which
-  match names case-insensitively. Received fields are converted to Python
-  objects only when read, and a `Headers` passed to a sending method is used
-  without converting its fields again.
+  match names case-insensitively. It is a `collections.abc.Sequence` with
+  `index()` and `count()`. Received fields are converted to Python objects
+  only when read, and a `Headers` passed to a sending method is used without
+  converting its fields again.
 - `send_request()` and `send_response()` accept `body=` to send a complete
   message in one call (Rust: `send_request_with_body()` and
   `send_response_with_body()`). When no framing field is present,
@@ -34,10 +42,22 @@ User-visible changes to h11r are recorded here.
   `Vec<(Vec<u8>, Vec<u8>)>`. All fields of a section share one buffer, so a
   section costs two allocations regardless of its size. Build one from pairs,
   such as `Headers::from([("Host", "example.test")])`, and pass
-  `&Headers::new()` to `end_of_message()` when there are no trailers.
+  `Headers::new()` to `end_of_message()` when there are no trailers.
+- Rust: the send methods take their message by value, as
+  `send_request(Request)`, `send_informational_response(InformationalResponse)`,
+  `send_response(Response)`, and `end_of_message(Headers)`, matching the
+  complete-message methods. Fields added to a head, such as
+  `Transfer-Encoding: chunked`, no longer copy the caller's fields.
 - Python: event `headers` and `trailers` are `h11r.Headers` instead of tuples.
   Iteration, indexing, `len()`, and comparison with a tuple of byte pairs work
   as before; use `tuple(event.headers)` where a real tuple is required.
+- Python: `State`, `Role`, and `ReceiveStatus` members are hashable, so they
+  work in sets and as dictionary keys, and no longer compare equal to
+  integers.
+- Python: a status code outside 100–599 raises `ValueError` however large the
+  integer; very large values previously raised `OverflowError`.
+  `RemoteProtocolError.suggested_status_code` is `None` on an instance raised
+  outside the connection.
 - A client-role `start_next_cycle()` now fails, and the connection must close,
   when peer bytes follow a complete response. RFC 9112 Section 6.3 forbids
   processing such bytes as a separate response; previously they became the
@@ -50,10 +70,52 @@ User-visible changes to h11r are recorded here.
   Exceeding it raises `RemoteProtocolError` with status 400.
 - A final response sent while request content remains unread now carries
   `Connection: close`, and the connection closes after the exchange. A
-  response sent once all content is read, before `EndOfMessage` is polled,
-  keeps the connection.
+  response sent once the remaining `Content-Length` content has arrived, even
+  if not yet polled, keeps the connection.
+- HTTP/1.0 connections persist when the message carries
+  `Connection: keep-alive`, as RFC 9112 Section 9.3 allows and mainstream
+  servers do. A response to such a client gets `Connection: keep-alive` when
+  it has a known length, and `Connection: close` otherwise. A proxy, which
+  must not honor the option on requests, sends `Connection: close` itself.
+- A received response whose final transfer coding is not chunked, such as
+  `Transfer-Encoding: gzip`, is read until the server closes, as RFC 9112
+  Section 6.3 requires, instead of raising `RemoteProtocolError`. Codings
+  before a final `chunked` are left in the body for the caller to decode.
+- A request whose final transfer coding is not chunked suggests status 400,
+  as RFC 9112 Section 6.3 requires, instead of 501; 501 remains for an
+  unsupported coding before a final `chunked`. A request line longer than
+  `max_head_bytes` suggests 414 instead of 431.
 - A response sent after a peer protocol error also carries
   `Connection: close`.
+- Rust: `DataParts.prefix` is a `DataPrefix`, which dereferences to the
+  chunk-size line and lives on the stack, and `DataParts.suffix` is
+  `&'static [u8]`. Framing a chunk no longer allocates: Rust `send_data()`
+  of a 256-byte chunk is about 3.8× faster and `send_data_parts()` 9×.
+  Python `send_data()` and `body=` sends write the body straight into the
+  returned `bytes`, copying it once instead of twice, and the Rust
+  `send_*_with_body()` methods copy it once, about twice as fast for a 1 MiB
+  body.
+- `Transfer-Encoding` is parsed as RFC 9110 Section 10.1.4 defines it, so a
+  comma inside a quoted parameter no longer splits a coding, and empty list
+  elements are ignored as Section 5.6.1.2 requires. A malformed coding, or a
+  registered coding such as `chunked` or `gzip` with parameters, is rejected
+  with status 400.
+- Senders enforce the field rules of RFC 9110 and RFC 9112 for the fields
+  `h11r` interprets, raising `LocalProtocolError` for: a request without Host,
+  including HTTP/1.0; more than one `Content-Length` value; an empty element
+  in `Connection`, `Upgrade`, `Expect`, `TE`, or `Transfer-Encoding`;
+  `Upgrade` without `Connection: upgrade`; a `426` without `Upgrade`; `TE`
+  naming `chunked` or without `Connection: TE`; and invalid framing fields on
+  a `HEAD` or `304` response. A request's Host field is written first.
+- A client that receives a response with no request outstanding raises
+  `RemoteProtocolError`, as RFC 9112 Section 9.2 requires, instead of
+  accepting it. `send_request()` raises `LocalProtocolError` when peer bytes
+  arrived before it, so they can never become its response.
+- A client stops reporting `keep_alive` once it receives EOF, and
+  `start_next_cycle()` fails, since the server has closed. A server still
+  drains requests buffered before the client's EOF.
+- A chunk extension may have whitespace after a valueless name, as the RFC
+  9112 Section 7.1.1 grammar allows.
 - Faster protocol processing: framing analysis no longer allocates, body data
   skips joint-state resolution, header sections are copied into one buffer,
   the Python binding reuses shared `bytes` and receive-status objects and reads
@@ -77,7 +139,26 @@ User-visible changes to h11r are recorded here.
 - Sending content in a `CONNECT` or `TRACE` request, or in a `205` response,
   raises `LocalProtocolError`, as RFC 9110 Sections 9.3.6, 9.3.8, and 15.3.6
   require. A `205` response without framing fields now carries
-  `Content-Length: 0` instead of chunked framing.
+  `Content-Length: 0` instead of chunked framing. A server receiving such a
+  request rejects it with status 400.
+- A response that itself ends keep-alive now carries `Connection: close`:
+  one sent before a request arrives, such as a `408` on an idle reused
+  connection, and one that rejects `CONNECT`. Previously the peer could not
+  tell that the connection would close.
+- A response without content, such as one to `HEAD` or a `304`, that carries
+  faulty framing fields (`Transfer-Encoding` in HTTP/1.0, or with
+  `Content-Length`) now ends the connection, as RFC 9112 Sections 6.1 and 6.3
+  require. Previously an HTTP/1.0 `Connection: keep-alive` response could
+  keep it open.
+- Empty lines followed by EOF between messages, such as a stray CRLF after a
+  request body, are a clean close instead of a truncated-head error, as
+  RFC 9112 Section 2.2 allows.
+- Trailer parsing stops at the end of the message, so a whitespace-led line
+  that follows it is no longer read as a folded trailer, which made the
+  result depend on transport segmentation.
+- A response to an HTTP/1.0 client that carries both `Transfer-Encoding` and
+  `Content-Length` raises `LocalProtocolError`, as it does for an HTTP/1.1
+  client, instead of being sent with both removed.
 
 ## [0.2.2] - 2026-10-15
 
