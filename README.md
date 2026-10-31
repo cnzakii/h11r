@@ -29,7 +29,7 @@ your calls into bytes to send; your code decides how and when those bytes move.
 ## Why h11r
 
 - **Fast.** On realistic browser-to-API traffic, `h11r` completes HTTP/1.1
-  exchanges 12–19× faster than the pure-Python [h11][h11] in every
+  exchanges 13–23× faster than the pure-Python [h11][h11] in every
   [measured scenario](#performance).
 - **Strict about message boundaries.** Ambiguous framing such as
   `Transfer-Encoding` with `Content-Length` is rejected, request targets must
@@ -137,13 +137,13 @@ transitions, event construction, and serialization.
 <!-- benchmark-table:start -->
 | Scenario | h11r (µs/op) | h11 (µs/op) | Relative throughput |
 | --- | ---: | ---: | ---: |
-| API GET · 10 fields | 1.59 | 27.54 | 17.3× |
-| JSON POST · 1 KiB | 1.83 | 32.58 | 17.8× |
-| Fragmented GET · 16 B reads | 3.39 | 49.17 | 14.5× |
-| Chunked upload · 64 KiB | 7.28 | 90.48 | 12.4× |
-| Client/server round trip | 2.77 | 53.83 | 19.5× |
+| API GET · 10 fields | 1.34 | 27.13 | 20.3× |
+| JSON POST · 1 KiB | 1.53 | 30.81 | 20.2× |
+| Fragmented GET · 16 B reads | 3.29 | 46.74 | 14.2× |
+| Chunked upload · 64 KiB | 6.36 | 85.22 | 13.4× |
+| Client/server round trip | 2.32 | 52.87 | 22.8× |
 
-_Environment: h11r 0.2.2 · h11 0.16.0 · CPython 3.13.12 (64-bit) · Apple M4 · macOS-27.2-arm64-arm-64bit-Mach-O · 2026-10-29_
+_Environment: h11r 0.3.0 · h11 0.16.0 · CPython 3.13.12 (64-bit) · Apple M4 · macOS-27.2-arm64-arm-64bit-Mach-O · 2026-10-31_
 <!-- benchmark-table:end -->
 
 These are protocol-layer measurements. They exclude sockets, TLS, event-loop
@@ -153,14 +153,6 @@ your program's time HTTP/1.1 processing takes.
 Inspect the [benchmark source][benchmark-script], [raw result][benchmark-results],
 and [chart][benchmark-chart], or follow the
 [reproduction steps](https://github.com/cnzakii/h11r/blob/main/CONTRIBUTING.md#performance-changes).
-
-## Relationship to h11
-
-`h11r` occupies the same Sans-I/O protocol layer as [h11][h11] and keeps its
-event model, but it is an independent implementation with its own API and a
-Rust core built on [`httparse`](https://github.com/seanmonstar/httparse). It
-does not depend on `h11` at runtime. Interoperability tests check exchanges
-between `h11r` and `h11` endpoints at the wire boundary.
 
 ## Contributing
 

@@ -65,6 +65,18 @@ Likewise, one HTTP body can produce any number of `Data` events. Use
 When a transport read returns `b""`, pass that empty value to `receive_data()`.
 The connection can then distinguish a clean close from a truncated message.
 
+Message heads and trailers are `h11r.Headers`, a sequence of `(name, value)`
+byte pairs in wire order. `headers.get("content-type")` returns the first
+value or `None`, and `headers.get_all("vary")` returns every value; both match
+names case-insensitively.
+
+`h11r` removes only the transfer framing that RFC 9112 defines. It decodes
+`chunked` and leaves any other transfer coding, such as `gzip` in
+`Transfer-Encoding: gzip, chunked`, in the `Data` bytes for the application to
+decode. A response whose last transfer coding is not `chunked` has no length,
+so its body ends when the connection closes (RFC 9112 Section 6.3). A request
+in that form is rejected, because a server could not find its end.
+
 ## Sending: calls return wire bytes
 
 Sending has one ordering rule:
