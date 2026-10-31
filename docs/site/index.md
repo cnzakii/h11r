@@ -61,8 +61,8 @@ request_bytes = client.send_request(
     "GET",
     "/hello",
     [("Host", "example.test")],
+    body=b"",
 )
-request_bytes += client.end_of_message()
 ```
 
 Your transport writes `request_bytes` to the peer. Bytes read from the peer go
@@ -80,6 +80,8 @@ back to `h11r`, which turns them into response events.
   cycles, receive statuses, and error boundaries.
 - [**Connect your transport**](integration.md) — join a `Connection` to a
   synchronous or asynchronous byte stream.
+- [**Use the Rust core ↗**](https://docs.rs/h11r) — read the Rust crate's API
+  reference on docs.rs.
 
 ## How h11r fits
 
@@ -118,31 +120,3 @@ workload or machine.
 
 [Benchmark script ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/crates/h11r-python/benchmarks/compare_h11.py) ·
 [Raw `pyperf` result ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/docs/assets/python-benchmark.json)
-
-## Relationship to h11
-
-`h11r` is an independent Sans-I/O HTTP/1.1 protocol engine with a Rust core
-and a typed Python API. It performs no network I/O and does not depend on the
-Python [`h11` ↗](https://github.com/python-hyper/h11) package at runtime.
-`h11r` and `h11` occupy the same protocol-engine layer, but their public APIs
-differ, so switching between them requires adapting application integration
-code.
-
-The Rust core uses
-[`httparse` ↗](https://github.com/seanmonstar/httparse) for request and response
-heads and trailer fields. `h11r` implements framing, buffering and resource
-limits, wire serialization, and its public Rust and Python APIs.
-
-Interoperability tests verify representative `h11r`-client/`h11`-server and
-`h11`-client/`h11r`-server exchanges at the HTTP wire boundary. They provide
-evidence for those exchanges, not an API-compatibility or exhaustive
-wire-compatibility guarantee. `h11` remains a mature pure-Python library with
-its own established API and ecosystem.
-
-[Inspect the interoperability tests ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/crates/h11r-python/tests/test_interop.py)
-
-Use the [Python API reference](api.md) for parameters, return values, behavior,
-and exceptions.
-
-The Rust core has a separate
-[docs.rs API reference ↗](https://docs.rs/h11r).

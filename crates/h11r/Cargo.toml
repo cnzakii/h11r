@@ -8,7 +8,7 @@ description = "Sans-I/O HTTP/1.1 library"
 readme = "README.md"
 publish = true
 repository = "https://github.com/cnzakii/h11r"
-keywords = ["http", "http1", "h11r", "sans-io", "protocol"]
+keywords = ["http", "http1", "sans-io", "protocol"]
 categories = ["network-programming"]
 
 [dependencies]

@@ -13,48 +13,48 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
 <line class="grid" x1="330.0" y1="108" x2="330.0" y2="492"/>
 <text class="secondary" x="330.0" y="102" text-anchor="middle" font-size="10">0×</text>
 <line class="grid" x1="470.0" y1="108" x2="470.0" y2="492"/>
-<text class="secondary" x="470.0" y="102" text-anchor="middle" font-size="10">5×</text>
+<text class="secondary" x="470.0" y="102" text-anchor="middle" font-size="10">6×</text>
 <line class="grid" x1="610.0" y1="108" x2="610.0" y2="492"/>
-<text class="secondary" x="610.0" y="102" text-anchor="middle" font-size="10">10×</text>
+<text class="secondary" x="610.0" y="102" text-anchor="middle" font-size="10">12×</text>
 <line class="grid" x1="750.0" y1="108" x2="750.0" y2="492"/>
-<text class="secondary" x="750.0" y="102" text-anchor="middle" font-size="10">15×</text>
+<text class="secondary" x="750.0" y="102" text-anchor="middle" font-size="10">18×</text>
 <line class="grid" x1="890.0" y1="108" x2="890.0" y2="492"/>
-<text class="secondary" x="890.0" y="102" text-anchor="middle" font-size="10">20×</text>
+<text class="secondary" x="890.0" y="102" text-anchor="middle" font-size="10">24×</text>
 <text class="primary" x="40" y="139" font-size="13" font-weight="500">API GET · 10 fields</text>
-<text class="secondary" x="40" y="161" font-size="11">1.59 µs vs 27.54 µs</text>
+<text class="secondary" x="40" y="161" font-size="11">1.34 µs vs 27.13 µs</text>
 <text class="secondary" x="278" y="136" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="124" width="485.3" height="15" rx="7.5"/>
-<text class="primary" x="825.3" y="136" font-size="11" font-weight="500">17.3×</text>
+<rect class="candidate" x="330" y="124" width="474.0" height="15" rx="7.5"/>
+<text class="primary" x="814.0" y="136" font-size="11" font-weight="500">20.3×</text>
 <text class="secondary" x="278" y="159" text-anchor="end" font-size="10">h11</text>
-<rect class="reference" x="330" y="147" width="28.0" height="10" rx="5"/>
+<rect class="reference" x="330" y="147" width="23.3" height="10" rx="5"/>
 <text class="primary" x="40" y="215" font-size="13" font-weight="500">JSON POST · 1 KiB</text>
-<text class="secondary" x="40" y="237" font-size="11">1.83 µs vs 32.58 µs</text>
+<text class="secondary" x="40" y="237" font-size="11">1.53 µs vs 30.81 µs</text>
 <text class="secondary" x="278" y="212" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="200" width="498.9" height="15" rx="7.5"/>
-<text class="primary" x="838.9" y="212" font-size="11" font-weight="500">17.8×</text>
+<rect class="candidate" x="330" y="200" width="470.2" height="15" rx="7.5"/>
+<text class="primary" x="810.2" y="212" font-size="11" font-weight="500">20.2×</text>
 <text class="secondary" x="278" y="235" text-anchor="end" font-size="10">h11</text>
-<rect class="reference" x="330" y="223" width="28.0" height="10" rx="5"/>
+<rect class="reference" x="330" y="223" width="23.3" height="10" rx="5"/>
 <text class="primary" x="40" y="291" font-size="13" font-weight="500">Fragmented GET · 16 B reads</text>
-<text class="secondary" x="40" y="313" font-size="11">3.39 µs vs 49.17 µs</text>
+<text class="secondary" x="40" y="313" font-size="11">3.29 µs vs 46.74 µs</text>
 <text class="secondary" x="278" y="288" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="276" width="405.6" height="15" rx="7.5"/>
-<text class="primary" x="745.6" y="288" font-size="11" font-weight="500">14.5×</text>
+<rect class="candidate" x="330" y="276" width="331.0" height="15" rx="7.5"/>
+<text class="primary" x="671.0" y="288" font-size="11" font-weight="500">14.2×</text>
 <text class="secondary" x="278" y="311" text-anchor="end" font-size="10">h11</text>
-<rect class="reference" x="330" y="299" width="28.0" height="10" rx="5"/>
+<rect class="reference" x="330" y="299" width="23.3" height="10" rx="5"/>
 <text class="primary" x="40" y="367" font-size="13" font-weight="500">Chunked upload · 64 KiB</text>
-<text class="secondary" x="40" y="389" font-size="11">7.28 µs vs 90.48 µs</text>
+<text class="secondary" x="40" y="389" font-size="11">6.36 µs vs 85.22 µs</text>
 <text class="secondary" x="278" y="364" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="352" width="348.1" height="15" rx="7.5"/>
-<text class="primary" x="688.1" y="364" font-size="11" font-weight="500">12.4×</text>
+<rect class="candidate" x="330" y="352" width="312.6" height="15" rx="7.5"/>
+<text class="primary" x="652.6" y="364" font-size="11" font-weight="500">13.4×</text>
 <text class="secondary" x="278" y="387" text-anchor="end" font-size="10">h11</text>
-<rect class="reference" x="330" y="375" width="28.0" height="10" rx="5"/>
+<rect class="reference" x="330" y="375" width="23.3" height="10" rx="5"/>
 <text class="primary" x="40" y="443" font-size="13" font-weight="500">Client/server round trip</text>
-<text class="secondary" x="40" y="465" font-size="11">2.77 µs vs 53.83 µs</text>
+<text class="secondary" x="40" y="465" font-size="11">2.32 µs vs 52.87 µs</text>
 <text class="secondary" x="278" y="440" text-anchor="end" font-size="10">h11r</text>
-<rect class="candidate" x="330" y="428" width="544.9" height="15" rx="7.5"/>
-<text class="primary" x="884.9" y="440" font-size="11" font-weight="500">19.5×</text>
+<rect class="candidate" x="330" y="428" width="531.9" height="15" rx="7.5"/>
+<text class="primary" x="871.9" y="440" font-size="11" font-weight="500">22.8×</text>
 <text class="secondary" x="278" y="463" text-anchor="end" font-size="10">h11</text>
-<rect class="reference" x="330" y="451" width="28.0" height="10" rx="5"/>
-<text class="secondary" x="40" y="518" font-size="10">h11r 0.2.2 · h11 0.16.0 · CPython 3.13.12 (64-bit)</text>
-<text class="secondary" x="40" y="535" font-size="10">Apple M4 · macOS-27.2-arm64-arm-64bit-Mach-O · 2026-10-29</text>
+<rect class="reference" x="330" y="451" width="23.3" height="10" rx="5"/>
+<text class="secondary" x="40" y="518" font-size="10">h11r 0.3.0 · h11 0.16.0 · CPython 3.13.12 (64-bit)</text>
+<text class="secondary" x="40" y="535" font-size="10">Apple M4 · macOS-27.2-arm64-arm-64bit-Mach-O · 2026-10-31</text>
 </svg>

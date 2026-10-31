@@ -4,6 +4,8 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-31
+
 ### Added
 
 - Lenient parsing: `Connection(role, lenient=True)` (Rust:
@@ -34,7 +36,6 @@ User-visible changes to h11r are recorded here.
   Parsing a registered method no longer allocates.
 - The Rust crate has its own README with a tested client/server example, used
   as the docs.rs crate documentation.
-- CI runs every fuzz target on each change.
 
 ### Changed
 
@@ -42,7 +43,8 @@ User-visible changes to h11r are recorded here.
   `Vec<(Vec<u8>, Vec<u8>)>`. All fields of a section share one buffer, so a
   section costs two allocations regardless of its size. Build one from pairs,
   such as `Headers::from([("Host", "example.test")])`, and pass
-  `Headers::new()` to `end_of_message()` when there are no trailers.
+  `Headers::new()` to `end_of_message()` when there are no trailers. The
+  `Header` alias for `(Vec<u8>, Vec<u8>)` is removed.
 - Rust: the send methods take their message by value, as
   `send_request(Request)`, `send_informational_response(InformationalResponse)`,
   `send_response(Response)`, and `end_of_message(Headers)`, matching the
@@ -88,13 +90,9 @@ User-visible changes to h11r are recorded here.
 - A response sent after a peer protocol error also carries
   `Connection: close`.
 - Rust: `DataParts.prefix` is a `DataPrefix`, which dereferences to the
-  chunk-size line and lives on the stack, and `DataParts.suffix` is
-  `&'static [u8]`. Framing a chunk no longer allocates: Rust `send_data()`
-  of a 256-byte chunk is about 3.8× faster and `send_data_parts()` 9×.
-  Python `send_data()` and `body=` sends write the body straight into the
-  returned `bytes`, copying it once instead of twice, and the Rust
-  `send_*_with_body()` methods copy it once, about twice as fast for a 1 MiB
-  body.
+  chunk-size line, and `DataParts.suffix` is `&'static [u8]`, so framing a
+  chunk no longer allocates. Python `send_data()` and `body=` sends copy the
+  body once instead of twice.
 - `Transfer-Encoding` is parsed as RFC 9110 Section 10.1.4 defines it, so a
   comma inside a quoted parameter no longer splits a coding, and empty list
   elements are ignored as Section 5.6.1.2 requires. A malformed coding, or a
@@ -116,16 +114,9 @@ User-visible changes to h11r are recorded here.
   drains requests buffered before the client's EOF.
 - A chunk extension may have whitespace after a valueless name, as the RFC
   9112 Section 7.1.1 grammar allows.
-- Faster protocol processing: framing analysis no longer allocates, body data
-  skips joint-state resolution, header sections are copied into one buffer,
-  the Python binding reuses shared `bytes` and receive-status objects and reads
-  header input without extra Python calls, and release builds use fat LTO. On
-  an Apple M4 with CPython 3.13, the five `pyperf` workloads ran 1.26–1.81×
-  faster than 0.2.2 (geometric mean 1.55×), and the Rust criterion benchmarks
-  ran 19–42% faster.
-- The Python benchmark now models a browser calling a JSON API: requests carry
-  ten typical header fields and responses a JSON body. The README shows the
-  recorded result.
+- Faster protocol processing throughout parsing, framing, and the Python
+  binding. The README benchmark now models a browser calling a JSON API and
+  shows the recorded result.
 
 ### Fixed
 

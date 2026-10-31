@@ -10,7 +10,7 @@ readme = "../../README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["http", "http1", "h11r", "protocol", "rust", "sans-io"]
+keywords = ["http", "http1", "protocol", "rust", "sans-io"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
