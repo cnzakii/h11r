@@ -140,15 +140,36 @@ def _drain(connection: h11r.Connection) -> list[object]:
     return events
 
 
+def _merge_data(events: list[object]) -> list[object]:
+    """Joins adjacent Data within one chunk; their split is not meaningful."""
+    merged: list[object] = []
+    for event in events:
+        last = merged[-1] if merged else None
+        if (
+            isinstance(event, tuple)
+            and event[0] == "data"
+            and isinstance(last, tuple)
+            and last[0] == "data"
+            and not last[3]
+            and not event[2]
+        ):
+            merged[-1] = ("data", last[1] + event[1], last[2], event[3])
+        else:
+            merged.append(event)
+    return merged
+
+
 def _receive(parts: Sequence[bytes | bytearray], *, poll_each: bool) -> list[object]:
-    """Feeds `parts`, polling after each one or only after the first."""
+    """Feeds `parts`, polling after each one, or only until the head parses
+    so that later body parts queue up before the final drain."""
     connection = h11r.Connection(h11r.Role.SERVER)
-    events = []
-    for index, part in enumerate(parts):
+    events: list[object] = []
+    for part in parts:
         connection.receive_data(part)
-        if poll_each or index == 0:
+        if poll_each or not events:
             events += _drain(connection)
-    return [_summarize(event) for event in events + _drain(connection)]
+    summaries = [_summarize(event) for event in events + _drain(connection)]
+    return _merge_data(summaries)
 
 
 @pytest.mark.parametrize(
@@ -205,6 +226,36 @@ def test_mutable_or_overlong_body_input_is_copied() -> None:
         ("end", ()),
     ]
     assert connection.peer_state is h11r.State.DONE
+
+
+def test_held_body_bytes_precede_bytes_buffered_after_them() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    held = b"ab"
+    connection.receive_data(held)
+    connection.receive_data(b"cdGET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+    events = _drain(connection)
+    assert [_summarize(event) for event in events] == [
+        ("data", b"ab", False, False),
+        ("data", b"cd", False, False),
+        ("end", ()),
+    ]
+    assert events[0].data is held
+
+
+def test_bytes_subclass_body_input_is_copied() -> None:
+    class Tagged(bytes):
+        pass
+
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+    connection.receive_data(Tagged(b"ab"))
+    data = connection.next_event()
+    assert isinstance(data, h11r.Data)
+    assert type(data.data) is bytes
 
 
 def test_held_body_bytes_precede_eof() -> None:
