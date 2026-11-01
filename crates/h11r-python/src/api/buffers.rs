@@ -1,37 +1,29 @@
 //! Reading bytes from Python buffers and text.
 
 use super::*;
-use pyo3::buffer::{PyUntypedBuffer, ReadOnlyCell};
+use pyo3::buffer::PyUntypedBuffer;
 use pyo3::exceptions::{PyAttributeError, PyTypeError, PyValueError};
 use pyo3::types::{PyAny, PyBytes, PyMemoryView, PyString};
 
-pub(super) enum BufferBytes<'a> {
-    Borrowed(&'a [u8]),
-    Cells(&'a [ReadOnlyCell<u8>]),
-}
-
-/// Runs `consume` over a safe view of a buffer-protocol object.
+/// Runs `consume` over the bytes of a buffer-protocol object.
 ///
-/// Immutable `bytes` are borrowed directly. Contiguous, `u8`-compatible
-/// buffers expose cells whose values must be read individually because another
-/// thread may mutate them. Other buffers retain the previous copying behavior.
-pub(super) fn with_buffer_bytes<R>(
+/// Immutable `bytes` are borrowed directly. Other buffers are copied first
+/// because another thread may mutate them while they are read.
+pub(super) fn with_buffer<R>(
     value: &Bound<'_, PyAny>,
-    consume: impl FnOnce(BufferBytes<'_>) -> R,
+    consume: impl FnOnce(&[u8]) -> R,
 ) -> PyResult<R> {
     if let Ok(bytes) = value.cast::<PyBytes>() {
-        return Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())));
+        return Ok(consume(bytes.as_bytes()));
     }
     let buffer = PyUntypedBuffer::get(value)?;
-    if let Ok(buffer) = buffer.as_typed::<u8>()
-        && let Some(cells) = buffer.as_slice(value.py())
-    {
-        return Ok(consume(BufferBytes::Cells(cells)));
+    if let Ok(buffer) = buffer.as_typed::<u8>() {
+        return Ok(consume(&buffer.to_vec(value.py())?));
     }
     drop(buffer);
     let view = PyMemoryView::from(value)?;
     let bytes = view.call_method0("tobytes")?.cast_into::<PyBytes>()?;
-    Ok(consume(BufferBytes::Borrowed(bytes.as_bytes())))
+    Ok(consume(bytes.as_bytes()))
 }
 
 pub(super) fn contiguous_buffer_len(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -84,19 +76,6 @@ pub(super) fn with_text_or_buffer<R>(
     }
 }
 
-/// Runs `consume` over the bytes of a buffer-protocol object.
-pub(super) fn with_buffer<R>(
-    value: &Bound<'_, PyAny>,
-    consume: impl FnOnce(&[u8]) -> R,
-) -> PyResult<R> {
-    with_buffer_bytes(value, |data| match data {
-        BufferBytes::Borrowed(bytes) => consume(bytes),
-        BufferBytes::Cells(cells) => {
-            consume(&cells.iter().map(ReadOnlyCell::get).collect::<Vec<_>>())
-        }
-    })
-}
-
 /// Writes `before`, the bytes of `value`, and `after` into one new `bytes`,
 /// so the body is copied once. `framing` gets the body length.
 pub(super) fn framed<B: AsRef<[u8]>, A: AsRef<[u8]>>(
@@ -104,25 +83,15 @@ pub(super) fn framed<B: AsRef<[u8]>, A: AsRef<[u8]>>(
     value: &Bound<'_, PyAny>,
     framing: impl FnOnce(usize) -> Result<(B, A), core::LocalProtocolError>,
 ) -> PyResult<Py<PyBytes>> {
-    with_buffer_bytes(value, |data| {
-        let length = match &data {
-            BufferBytes::Borrowed(bytes) => bytes.len(),
-            BufferBytes::Cells(cells) => cells.len(),
-        };
+    with_buffer(value, |data| {
+        let length = data.len();
         let (before, after) = framing(length).map_err(local_error)?;
         let (before, after) = (before.as_ref(), after.as_ref());
         let wire = PyBytes::new_with(py, before.len() + length + after.len(), |out| {
             let (head, rest) = out.split_at_mut(before.len());
             let (body, tail) = rest.split_at_mut(length);
             head.copy_from_slice(before);
-            match data {
-                BufferBytes::Borrowed(bytes) => body.copy_from_slice(bytes),
-                BufferBytes::Cells(cells) => {
-                    for (byte, cell) in body.iter_mut().zip(cells) {
-                        *byte = cell.get();
-                    }
-                }
-            }
+            body.copy_from_slice(data);
             tail.copy_from_slice(after);
             Ok(())
         })?;

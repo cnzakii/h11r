@@ -2,7 +2,6 @@
 
 use super::*;
 use h11r as core;
-use pyo3::buffer::ReadOnlyCell;
 use pyo3::exceptions::PyValueError;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyBytes};
@@ -115,13 +114,7 @@ impl PyConnection {
                 return Ok(());
             }
         }
-        with_buffer_bytes(data, |data| match data {
-            BufferBytes::Borrowed(bytes) => self.0.receive_data(bytes),
-            BufferBytes::Cells(cells) => self
-                .0
-                .receive_data_iter(cells.iter().map(ReadOnlyCell::get)),
-        })?
-        .map_err(local_error)
+        with_buffer(data, |data| self.0.receive_data(data))?.map_err(local_error)
     }
 
     /// Return the next peer event or a receive status.

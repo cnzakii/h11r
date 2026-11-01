@@ -19,14 +19,7 @@ use pyo3::types::{PyAny, PyBool, PyBytes};
 ///         Section 3.2.
 ///     headers (Headers): Ordered header fields.
 ///     http_version (bytes): Peer HTTP version bytes.
-#[pyclass(
-    name = "Request",
-    module = "h11r",
-    frozen,
-    eq,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "Request", module = "h11r", frozen, eq, get_all)]
 #[derive(Debug)]
 pub(super) struct PyRequest {
     /// The case-sensitive request method as bytes.
@@ -102,15 +95,7 @@ impl PyRequest {
 }
 
 /// The fields shared by informational and final responses.
-#[pyclass(
-    name = "_ResponseBase",
-    module = "h11r",
-    subclass,
-    frozen,
-    eq,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "_ResponseBase", module = "h11r", subclass, frozen, eq, get_all)]
 #[derive(Debug)]
 pub(super) struct PyResponseBase {
     /// The status code.
@@ -214,7 +199,6 @@ impl PyResponseBase {
     module = "h11r",
     extends = PyResponseBase,
     frozen,
-    skip_from_py_object
 )]
 #[derive(Debug)]
 pub(super) struct PyInformationalResponse;
@@ -250,7 +234,6 @@ impl PyInformationalResponse {
     module = "h11r",
     extends = PyResponseBase,
     frozen,
-    skip_from_py_object
 )]
 #[derive(Debug)]
 pub(super) struct PyResponse;
@@ -281,14 +264,7 @@ impl PyResponse {
 ///     data (bytes): Decoded body bytes.
 ///     chunk_start (bool): Whether this data begins an HTTP chunk.
 ///     chunk_end (bool): Whether this data ends an HTTP chunk.
-#[pyclass(
-    name = "Data",
-    module = "h11r",
-    frozen,
-    eq,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "Data", module = "h11r", frozen, eq, get_all)]
 #[derive(Debug)]
 pub(super) struct PyData {
     /// The decoded body bytes.
@@ -351,14 +327,7 @@ impl PyData {
 ///
 /// Attributes:
 ///     trailers (Headers): Ordered trailer fields.
-#[pyclass(
-    name = "EndOfMessage",
-    module = "h11r",
-    frozen,
-    eq,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "EndOfMessage", module = "h11r", frozen, eq, get_all)]
 #[derive(Debug)]
 pub(super) struct PyEndOfMessage {
     /// Ordered trailer fields.
@@ -397,13 +366,7 @@ impl PyEndOfMessage {
 }
 
 /// Clean transport EOF from the peer.
-#[pyclass(
-    name = "ConnectionClosed",
-    module = "h11r",
-    frozen,
-    eq,
-    skip_from_py_object
-)]
+#[pyclass(name = "ConnectionClosed", module = "h11r", frozen, eq)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct PyConnectionClosed;
 

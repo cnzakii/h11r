@@ -15,13 +15,7 @@ use pyo3::types::{PyAny, PyBool, PyBytes, PyIterator, PyList, PyString, PyTuple}
 /// `Headers(fields=None)` from `(name, value)` pairs to reuse fields across
 /// sends without converting them again; it compares equal to a tuple of the
 /// same byte pairs.
-#[pyclass(
-    name = "Headers",
-    module = "h11r",
-    frozen,
-    sequence,
-    skip_from_py_object
-)]
+#[pyclass(name = "Headers", module = "h11r", frozen, sequence)]
 pub(super) struct PyHeaders {
     fields: core::Headers,
     /// The `(name, value)` pairs, built on first use.
