@@ -32,29 +32,6 @@ impl Connection {
     }
 
     #[doc(hidden)]
-    /// Appends peer bytes from an iterator. An empty iterator marks transport EOF.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalProtocolError`] if the iterator supplies a byte after EOF
-    /// has already been recorded.
-    pub fn receive_data_iter(
-        &mut self,
-        data: impl IntoIterator<Item = u8>,
-    ) -> Result<(), LocalProtocolError> {
-        let mut data = data.into_iter();
-        let Some(first) = data.next() else {
-            self.record_eof();
-            return Ok(());
-        };
-        if self.eof {
-            return Err(local("receive_data called after EOF"));
-        }
-        self.input.extend_iter(std::iter::once(first).chain(data));
-        Ok(())
-    }
-
-    #[doc(hidden)]
     /// How many body payload bytes the caller may hold instead of passing to
     /// [`Connection::receive_data`], then hand over by count with
     /// [`Connection::next_event_in_place`].
