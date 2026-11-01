@@ -54,6 +54,46 @@ impl Connection {
         Ok(())
     }
 
+    #[doc(hidden)]
+    /// How many body payload bytes the caller may hold instead of passing to
+    /// [`Connection::receive_data`], then hand over by count with
+    /// [`Connection::next_event_in_place`].
+    ///
+    /// Returns `None` unless the decoder is inside message payload with
+    /// nothing buffered and no EOF, so held bytes never need framing work.
+    #[must_use]
+    pub fn body_payload_remaining(&self) -> Option<usize> {
+        if self.eof || !self.input.as_slice().is_empty() {
+            return None;
+        }
+        self.payload_remaining()
+    }
+
+    #[doc(hidden)]
+    /// Polls the `Data` event for `count` held body bytes, which precede
+    /// anything buffered since, and returns its chunk flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalProtocolError`] if `count` is zero or exceeds the
+    /// payload remaining.
+    pub fn next_event_in_place(
+        &mut self,
+        count: usize,
+    ) -> Result<(bool, bool), LocalProtocolError> {
+        if count == 0
+            || self
+                .payload_remaining()
+                .is_none_or(|remaining| count > remaining)
+        {
+            return Err(local("held body bytes exceed the remaining payload"));
+        }
+        let (_, chunk_start, chunk_end) = self.advance_payload(count);
+        self.peer_data(count, chunk_start, chunk_end)
+            .map_err(|_| local("held body bytes are invalid in the peer state"))?;
+        Ok((chunk_start, chunk_end))
+    }
+
     /// Polls one peer event, `NeedData`, or `Paused`.
     ///
     /// # Errors
@@ -126,14 +166,7 @@ impl Connection {
         match self.cycle.reader {
             Reader::Head => self.read_head(),
             Reader::Fixed(0) => self.finish_peer(Headers::new()),
-            Reader::Fixed(remaining) => {
-                let count = remaining.min(self.input.as_slice().len());
-                if count == 0 {
-                    return self.need_data_or_eof("unexpected EOF in Content-Length body");
-                }
-                self.cycle.reader = Reader::Fixed(remaining - count);
-                self.peer_data(count, false, false)
-            }
+            Reader::Fixed(_) => self.read_payload("unexpected EOF in Content-Length body"),
             Reader::CloseDelimited => {
                 let count = self.input.as_slice().len();
                 if count > 0 {
@@ -350,22 +383,7 @@ impl Connection {
                 }
                 self.next_event_inner()
             }
-            Chunk::Data { remaining, first } => {
-                let count = remaining.min(self.input.as_slice().len());
-                if count == 0 {
-                    return self.need_data_or_eof("unexpected EOF in chunk data");
-                }
-                let last = count == remaining;
-                self.cycle.reader = if last {
-                    Reader::Chunked(Chunk::DataEnd)
-                } else {
-                    Reader::Chunked(Chunk::Data {
-                        remaining: remaining - count,
-                        first: false,
-                    })
-                };
-                self.peer_data(count, first, last)
-            }
+            Chunk::Data { .. } => self.read_payload("unexpected EOF in chunk data"),
             Chunk::DataEnd => {
                 if self.input.as_slice().len() < 2 {
                     return self.need_data_or_eof("unexpected EOF after chunk data");
@@ -394,6 +412,55 @@ impl Connection {
                 self.finish_peer(trailers)
             }
         }
+    }
+
+    /// Payload bytes left before the decoder needs framing again, while the
+    /// peer is sending a body.
+    fn payload_remaining(&self) -> Option<usize> {
+        if self.peer_state() != State::SendBody {
+            return None;
+        }
+        match self.cycle.reader {
+            Reader::Fixed(remaining) if remaining > 0 => Some(remaining),
+            Reader::Chunked(Chunk::Data { remaining, .. }) => Some(remaining),
+            Reader::CloseDelimited => Some(usize::MAX),
+            _ => None,
+        }
+    }
+
+    /// Moves the decoder past at most `available` payload bytes and returns
+    /// how many it took with their chunk flags. The reader must be in payload.
+    fn advance_payload(&mut self, available: usize) -> (usize, bool, bool) {
+        match self.cycle.reader {
+            Reader::Fixed(remaining) => {
+                let count = remaining.min(available);
+                self.cycle.reader = Reader::Fixed(remaining - count);
+                (count, false, false)
+            }
+            Reader::Chunked(Chunk::Data { remaining, first }) => {
+                let count = remaining.min(available);
+                let last = count == remaining;
+                self.cycle.reader = Reader::Chunked(if last {
+                    Chunk::DataEnd
+                } else {
+                    Chunk::Data {
+                        remaining: remaining - count,
+                        first: false,
+                    }
+                });
+                (count, first, last)
+            }
+            _ => (available, false, false),
+        }
+    }
+
+    fn read_payload(&mut self, eof_message: &str) -> Result<Polled, RemoteProtocolError> {
+        let available = self.input.as_slice().len();
+        if available == 0 {
+            return self.need_data_or_eof(eof_message);
+        }
+        let (count, chunk_start, chunk_end) = self.advance_payload(available);
+        self.peer_data(count, chunk_start, chunk_end)
     }
 
     fn peer_data(

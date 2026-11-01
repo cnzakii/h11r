@@ -6,6 +6,7 @@ use pyo3::buffer::ReadOnlyCell;
 use pyo3::exceptions::PyValueError;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyBytes};
+use std::collections::VecDeque;
 
 /// A Sans-I/O HTTP/1 connection.
 ///
@@ -58,7 +59,12 @@ use pyo3::types::{PyAny, PyBytes};
 ///     ValueError: If any inbound limit is zero.
 #[pyclass(name = "Connection", module = "h11r")]
 #[derive(Debug)]
-pub(super) struct PyConnection(core::Connection);
+pub(super) struct PyConnection(
+    core::Connection,
+    /// Received `bytes` that lie wholly within body payload, held instead of
+    /// copied and returned as `Data` before anything buffered after them.
+    VecDeque<Py<PyBytes>>,
+);
 
 #[pymethods]
 impl PyConnection {
@@ -73,14 +79,20 @@ impl PyConnection {
         let limits = core::Limits::new(max_head_bytes, max_header_count)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let connection = core::Connection::new(role.into(), limits);
-        Ok(Self(if lenient {
-            connection.lenient()
-        } else {
-            connection
-        }))
+        Ok(Self(
+            if lenient {
+                connection.lenient()
+            } else {
+                connection
+            },
+            VecDeque::new(),
+        ))
     }
 
     /// Append bytes received from the peer; empty bytes mark EOF.
+    ///
+    /// A `bytes` object that falls wholly within a message body is not
+    /// copied: the `Data` event for it carries the same object.
     ///
     /// Args:
     ///     data (bytes | bytearray | memoryview): Bytes read from the transport.
@@ -89,6 +101,20 @@ impl PyConnection {
     ///     TypeError: If `data` does not implement the buffer protocol.
     ///     LocalProtocolError: If non-empty data follows EOF.
     fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(bytes) = data.cast::<PyBytes>()
+            && let Some(remaining) = self.0.body_payload_remaining()
+        {
+            let held: usize = self
+                .1
+                .iter()
+                .map(|held| held.bind(data.py()).as_bytes().len())
+                .sum();
+            let len = bytes.as_bytes().len();
+            if len > 0 && held + len <= remaining {
+                self.1.push_back(bytes.clone().unbind());
+                return Ok(());
+            }
+        }
         with_buffer_bytes(data, |data| match data {
             BufferBytes::Borrowed(bytes) => self.0.receive_data(bytes),
             BufferBytes::Cells(cells) => self
@@ -110,6 +136,13 @@ impl PyConnection {
     ///     RemoteProtocolError: If peer bytes violate HTTP syntax, framing,
     ///         configured limits, or protocol state.
     fn next_event(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(data) = self.1.pop_front() {
+            let (chunk_start, chunk_end) = self
+                .0
+                .next_event_in_place(data.bind(py).as_bytes().len())
+                .map_err(local_error)?;
+            return data_to_py(py, data, chunk_start, chunk_end);
+        }
         match self
             .0
             .next_event()
@@ -414,7 +447,12 @@ impl PyConnection {
     }
     /// How many received bytes are held but not yet parsed.
     #[getter]
-    fn buffered_nbytes(&self) -> usize {
-        self.0.trailing_data().0.len()
+    fn buffered_nbytes(&self, py: Python<'_>) -> usize {
+        let held: usize = self
+            .1
+            .iter()
+            .map(|held| held.bind(py).as_bytes().len())
+            .sum();
+        self.0.trailing_data().0.len() + held
     }
 }

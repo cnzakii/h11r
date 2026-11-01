@@ -36,6 +36,37 @@ fn run(role: Role, control: u8, wire: &[u8], chunk_size: usize) -> Outcome {
     finish(&mut connection, events, body, terminal)
 }
 
+/// Like `run`, but holds each read that lies within body payload and hands
+/// it over by count, as the Python binding does for immutable `bytes`.
+fn run_holding(role: Role, control: u8, wire: &[u8], chunk_size: usize) -> Outcome {
+    let mut connection = connection(role, control);
+    let mut events = Vec::new();
+    let mut body = Vec::new();
+    let mut terminal = Terminal::Complete;
+    let budget = wire.len().saturating_mul(2).saturating_add(MAX_EVENTS);
+
+    for chunk in wire.chunks(chunk_size) {
+        if connection
+            .body_payload_remaining()
+            .is_some_and(|remaining| chunk.len() <= remaining)
+        {
+            connection.next_event_in_place(chunk.len()).unwrap();
+            body.extend_from_slice(chunk);
+        } else {
+            connection.receive_data(chunk).unwrap();
+        }
+        terminal = poll(&mut connection, &mut events, &mut body, budget);
+        if matches!(terminal, Terminal::Error { .. }) {
+            break;
+        }
+    }
+    if matches!(terminal, Terminal::Complete) {
+        connection.receive_data(&[]).unwrap();
+        terminal = poll(&mut connection, &mut events, &mut body, budget);
+    }
+    finish(&mut connection, events, body, terminal)
+}
+
 /// Delivers every byte and EOF before the first poll.
 fn run_eof_first(role: Role, control: u8, wire: &[u8]) -> Outcome {
     let mut connection = connection(role, control);
@@ -70,6 +101,8 @@ fuzz_target!(|input: &[u8]| {
     let fragmented = run(role, control, wire, usize::from(control & 0x1f) + 1);
 
     let eof_first = run_eof_first(role, control, wire);
+    let holding = run_holding(role, control, wire, usize::from(control & 0x1f) + 1);
+    assert_eq!(fragmented, holding);
 
     for other in [&fragmented, &eof_first] {
         assert_eq!(whole.terminal, other.terminal);

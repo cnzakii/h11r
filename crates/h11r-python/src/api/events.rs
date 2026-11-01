@@ -419,6 +419,23 @@ impl PyConnectionClosed {
     }
 }
 
+pub(super) fn data_to_py(
+    py: Python<'_>,
+    data: Py<PyBytes>,
+    chunk_start: bool,
+    chunk_end: bool,
+) -> PyResult<Py<PyAny>> {
+    Ok(Py::new(
+        py,
+        PyData {
+            data,
+            chunk_start,
+            chunk_end,
+        },
+    )?
+    .into_any())
+}
+
 pub(super) fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py<PyAny>> {
     Ok(match event {
         core::Event::Request(value) => Py::new(py, PyRequest::from_core(py, value)?)?.into_any(),
@@ -434,15 +451,12 @@ pub(super) fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py
                 .add_subclass(PyResponse),
         )?
         .into_any(),
-        core::Event::Data(value) => Py::new(
+        core::Event::Data(value) => data_to_py(
             py,
-            PyData {
-                data: PyBytes::new(py, value.data).unbind(),
-                chunk_start: value.chunk_start,
-                chunk_end: value.chunk_end,
-            },
-        )?
-        .into_any(),
+            PyBytes::new(py, value.data).unbind(),
+            value.chunk_start,
+            value.chunk_end,
+        )?,
         core::Event::EndOfMessage(value) => Py::new(
             py,
             PyEndOfMessage {
