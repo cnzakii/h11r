@@ -4,7 +4,9 @@ import pytest
 from compare_h11 import (
     API_GET,
     API_RESPONSE,
+    LARGE_BODY_SIZE,
     SCENARIOS,
+    CandidateDownload,
     CandidateRoundTrip,
     CandidateServerCycle,
 )
@@ -24,3 +26,9 @@ def test_client_server_round_trip(benchmark):
     request, response, _, _ = benchmark(CandidateRoundTrip())
 
     assert (request, response) == (API_GET, API_RESPONSE)
+
+
+def test_download(benchmark):
+    wire = benchmark(CandidateDownload())
+
+    assert sum(map(len, wire)) > LARGE_BODY_SIZE

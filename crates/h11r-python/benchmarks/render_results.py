@@ -16,6 +16,8 @@ SCENARIOS = (
     ("json_post_1k", "JSON POST · 1 KiB"),
     ("fragmented_get_16b", "Fragmented GET · 16 B reads"),
     ("chunked_upload_64k", "Chunked upload · 64 KiB"),
+    ("upload_1m", "Upload · 1 MiB in 64 KiB reads"),
+    ("download_1m", "Download · 1 MiB in 64 KiB writes"),
     ("client_server_round_trip", "Client/server round trip"),
 )
 
@@ -66,7 +68,8 @@ def render_svg(rows: list[tuple[str, float, float]], details: str) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         '<title id="title">h11r and h11 Python benchmark</title>',
-        '<desc id="desc">Relative throughput for five HTTP/1.1 scenarios. Higher is faster; h11 is the 1.00 baseline.</desc>',
+        f'<desc id="desc">Relative throughput for {len(rows)} HTTP/1.1 scenarios. '
+        "Higher is faster; h11 is the 1.00 baseline.</desc>",
         "<style>",
         "text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}",
         ".canvas{fill:#fbfbfd}.primary{fill:#1d1d1f}.secondary{fill:#6e6e73}"
