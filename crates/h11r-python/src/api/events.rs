@@ -388,15 +388,15 @@ pub(super) fn data_to_py(
     chunk_start: bool,
     chunk_end: bool,
 ) -> PyResult<Py<PyAny>> {
-    Ok(Py::new(
+    Py::new(
         py,
         PyData {
             data,
             chunk_start,
             chunk_end,
         },
-    )?
-    .into_any())
+    )
+    .map(Py::into_any)
 }
 
 pub(super) fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py<PyAny>> {
@@ -414,12 +414,14 @@ pub(super) fn event_to_py(py: Python<'_>, event: core::Event<'_>) -> PyResult<Py
                 .add_subclass(PyResponse),
         )?
         .into_any(),
-        core::Event::Data(value) => data_to_py(
-            py,
-            PyBytes::new(py, value.data).unbind(),
-            value.chunk_start,
-            value.chunk_end,
-        )?,
+        core::Event::Data(value) => {
+            return data_to_py(
+                py,
+                PyBytes::new(py, value.data).unbind(),
+                value.chunk_start,
+                value.chunk_end,
+            );
+        }
         core::Event::EndOfMessage(value) => Py::new(
             py,
             PyEndOfMessage {

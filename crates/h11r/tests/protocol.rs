@@ -1743,6 +1743,30 @@ fn a_held_body_ends_the_wait_for_100_continue_when_polled() {
     assert!(!server.client_is_waiting_for_100_continue());
 }
 
+// RFC 9112 Section 6.3 item 8: a response without framing ends at close.
+#[test]
+fn held_bytes_extend_a_close_delimited_response() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client
+        .send_request(Request {
+            method: Method::GET,
+            target: b"/".to_vec(),
+            headers: headers([(b"Host", b"x")]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    client.end_of_message(Headers::new()).unwrap();
+    client.receive_data(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+    assert!(matches!(event(&mut client), Event::Response(_)));
+    assert!(client.hold_body_data(5));
+    assert!(client.hold_body_data(6));
+    assert_eq!(client.next_event_in_place(5), Ok((false, false)));
+    assert_eq!(client.next_event_in_place(6), Ok((false, false)));
+    client.receive_data(b"").unwrap();
+    assert!(!client.hold_body_data(1));
+    assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
+}
+
 // RFC 9110 Section 10.1.1: a response sent before the request content has
 // been read closes the connection; content that has arrived, held or not,
 // keeps it reusable.
