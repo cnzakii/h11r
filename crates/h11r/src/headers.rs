@@ -1,5 +1,6 @@
 //! Ordered header and trailer fields.
 
+use crate::wire::{valid_name, valid_value};
 use std::{
     fmt,
     hash::{Hash, Hasher},
@@ -22,11 +23,20 @@ use std::{
 /// assert_eq!(headers.len(), 3);
 /// assert_eq!(headers.get_all(b"ACCEPT").collect::<Vec<_>>(), [b"*/*".as_slice(), b"text/html"]);
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Headers {
     bytes: Vec<u8>,
     /// Byte ranges of each field's name and value in `bytes`.
     fields: Vec<(Range<usize>, Range<usize>)>,
+    /// Whether every field is known to be valid to send, checked as fields
+    /// are pushed so a section is not scanned again on each send.
+    valid: bool,
+}
+
+impl Default for Headers {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Headers {
@@ -36,6 +46,7 @@ impl Headers {
         Self {
             bytes: Vec::new(),
             fields: Vec::new(),
+            valid: true,
         }
     }
 
@@ -46,23 +57,28 @@ impl Headers {
         Self {
             bytes: Vec::with_capacity(bytes),
             fields: Vec::with_capacity(fields),
+            valid: true,
         }
     }
 
     /// Copies a parsed section in one piece; `fields` index into `section`.
+    /// Received fields are checked only if they are sent.
     pub(crate) fn from_section(section: &[u8], fields: Vec<(Range<usize>, Range<usize>)>) -> Self {
         Self {
             bytes: section.to_vec(),
             fields,
+            valid: false,
         }
     }
 
-    /// Appends one field. Names and values are validated when sent.
+    /// Appends one field. An invalid name or value is rejected when sent.
     pub fn push(&mut self, name: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        let (name, value) = (name.as_ref(), value.as_ref());
+        self.valid &= valid_name(name) && valid_value(value);
         let name_start = self.bytes.len();
-        self.bytes.extend_from_slice(name.as_ref());
+        self.bytes.extend_from_slice(name);
         let value_start = self.bytes.len();
-        self.bytes.extend_from_slice(value.as_ref());
+        self.bytes.extend_from_slice(value);
         self.fields
             .push((name_start..value_start, value_start..self.bytes.len()));
     }
@@ -93,6 +109,14 @@ impl Headers {
         self.iter()
             .filter(move |(field, _)| field.eq_ignore_ascii_case(name))
             .map(|(_, value)| value)
+    }
+
+    /// Whether every field has a valid name and value to send.
+    pub(crate) fn is_valid(&self) -> bool {
+        self.valid
+            || self
+                .iter()
+                .all(|(name, value)| valid_name(name) && valid_value(value))
     }
 
     /// Keeps only the fields for which `keep` returns `true`.
@@ -208,6 +232,19 @@ mod tests {
             format!("{headers:?}"),
             r#"[("A", ""), ("Cc", "dd"), ("E", "f")]"#
         );
+    }
+
+    #[test]
+    fn validity_follows_the_current_fields() {
+        let mut headers = Headers::from([("A", "b")]);
+        assert!(headers.is_valid());
+        headers.push("bad name", "x");
+        assert!(!headers.is_valid());
+        headers.retain(|name, _| name != b"bad name");
+        assert!(headers.is_valid());
+        // Received fields are checked when asked, not trusted.
+        assert!(!Headers::from_section(b"Xa\x01", vec![(0..1, 1..3)]).is_valid());
+        assert!(Headers::from_section(b"Xab", vec![(0..1, 1..3)]).is_valid());
     }
 
     #[test]

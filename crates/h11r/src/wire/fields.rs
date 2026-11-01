@@ -397,10 +397,7 @@ pub(crate) fn skip_ows(value: &[u8], mut at: usize) -> usize {
 }
 
 pub(crate) fn validate_headers(headers: &Headers) -> Result<(), LocalProtocolError> {
-    if headers
-        .iter()
-        .any(|(name, value)| !valid_name(name) || !valid_value(value))
-    {
+    if !headers.is_valid() {
         Err(local("invalid HTTP header field"))
     } else {
         Ok(())
