@@ -46,10 +46,7 @@ fn run_holding(role: Role, control: u8, wire: &[u8], chunk_size: usize) -> Outco
     let budget = wire.len().saturating_mul(2).saturating_add(MAX_EVENTS);
 
     for chunk in wire.chunks(chunk_size) {
-        if connection
-            .body_payload_remaining()
-            .is_some_and(|remaining| chunk.len() <= remaining)
-        {
+        if connection.hold_body_data(chunk.len()) {
             connection.next_event_in_place(chunk.len()).unwrap();
             body.extend_from_slice(chunk);
         } else {

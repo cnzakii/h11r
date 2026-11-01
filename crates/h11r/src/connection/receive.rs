@@ -32,42 +32,52 @@ impl Connection {
     }
 
     #[doc(hidden)]
-    /// How many body payload bytes the caller may hold instead of passing to
-    /// [`Connection::receive_data`], then hand over by count with
-    /// [`Connection::next_event_in_place`].
+    /// Records `count` received body bytes that the caller keeps instead of
+    /// passing to [`Connection::receive_data`], and returns whether it may.
     ///
-    /// Returns `None` unless the decoder is inside message payload with
-    /// nothing buffered and no EOF, so held bytes never need framing work.
-    #[must_use]
-    pub fn body_payload_remaining(&self) -> Option<usize> {
-        if self.eof || !self.input.as_slice().is_empty() {
-            return None;
+    /// Bytes may be held only inside message payload with nothing buffered
+    /// and no EOF, so they never need framing work. Held bytes count as
+    /// received, and the caller hands them over, oldest first, with
+    /// [`Connection::next_event_in_place`] before any `next_event` poll.
+    pub fn hold_body_data(&mut self, count: usize) -> bool {
+        let fits = count != 0
+            && !self.eof
+            && self.input.as_slice().is_empty()
+            && self
+                .payload_remaining()
+                .is_some_and(|remaining| self.held + count <= remaining);
+        if fits {
+            self.held += count;
         }
-        self.payload_remaining()
+        fits
     }
 
     #[doc(hidden)]
-    /// Polls the `Data` event for `count` held body bytes, which precede
-    /// anything buffered since, and returns its chunk flags.
+    /// Number of held body bytes not yet handed over.
+    #[must_use]
+    pub const fn held_body_len(&self) -> usize {
+        self.held
+    }
+
+    #[doc(hidden)]
+    /// Polls the `Data` event for the oldest `count` held body bytes and
+    /// returns its chunk flags.
     ///
     /// # Errors
     ///
-    /// Returns [`LocalProtocolError`] if `count` is zero or exceeds the
-    /// payload remaining.
+    /// Returns [`LocalProtocolError`] if `count` is zero or exceeds the held
+    /// bytes.
     pub fn next_event_in_place(
         &mut self,
         count: usize,
     ) -> Result<(bool, bool), LocalProtocolError> {
-        if count == 0
-            || self
-                .payload_remaining()
-                .is_none_or(|remaining| count > remaining)
-        {
-            return Err(local("held body bytes exceed the remaining payload"));
+        if count == 0 || count > self.held {
+            return Err(local("count does not match held body bytes"));
         }
         let (_, chunk_start, chunk_end) = self.advance_payload(count);
         self.peer_data(count, chunk_start, chunk_end)
             .map_err(|_| local("held body bytes are invalid in the peer state"))?;
+        self.held -= count;
         Ok((chunk_start, chunk_end))
     }
 

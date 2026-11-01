@@ -1632,10 +1632,7 @@ fn receive_holding(wire: &[u8], size: usize) -> Vec<Received> {
     let mut server = Connection::new(Role::Server, Limits::default());
     let mut events = Vec::new();
     for part in wire.chunks(size) {
-        if server
-            .body_payload_remaining()
-            .is_some_and(|remaining| part.len() <= remaining)
-        {
+        if server.hold_body_data(part.len()) {
             let (chunk_start, chunk_end) = server.next_event_in_place(part.len()).unwrap();
             events.push(Received::Data {
                 data: part.to_vec(),
@@ -1670,21 +1667,31 @@ fn held_body_bytes_produce_the_same_events_as_received_bytes() {
 }
 
 #[test]
-fn held_bytes_are_offered_only_inside_payload_with_nothing_buffered() {
+fn bytes_are_held_only_inside_payload_with_nothing_buffered() {
     let mut server = Connection::new(Role::Server, Limits::default());
-    assert_eq!(server.body_payload_remaining(), None);
+    assert!(!server.hold_body_data(1));
     server
         .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab")
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
-    assert_eq!(server.body_payload_remaining(), None, "bytes are buffered");
+    assert!(!server.hold_body_data(1), "bytes are buffered");
     assert!(matches!(event(&mut server), Event::Data(_)));
-    assert_eq!(server.body_payload_remaining(), Some(3));
+    assert!(!server.hold_body_data(0));
+    assert!(!server.hold_body_data(4), "past the payload");
+    assert!(server.hold_body_data(2));
+    assert!(
+        !server.hold_body_data(2),
+        "held bytes count toward the payload"
+    );
+    assert!(server.hold_body_data(1));
+    assert_eq!(server.held_body_len(), 3);
 
     assert!(server.next_event_in_place(0).is_err());
     assert!(server.next_event_in_place(4).is_err());
-    assert_eq!(server.next_event_in_place(3), Ok((false, false)));
-    assert_eq!(server.body_payload_remaining(), None, "payload is complete");
+    assert_eq!(server.next_event_in_place(2), Ok((false, false)));
+    assert_eq!(server.next_event_in_place(1), Ok((false, false)));
+    assert_eq!(server.held_body_len(), 0);
+    assert!(!server.hold_body_data(1), "payload is complete");
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
 }
 
@@ -1696,25 +1703,27 @@ fn held_chunk_data_carries_chunk_boundaries() {
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
     assert!(matches!(server.next_event(), Ok(NextEvent::NeedData)));
-    assert_eq!(server.body_payload_remaining(), Some(5));
+    assert!(!server.hold_body_data(6), "past the chunk");
+    assert!(server.hold_body_data(2));
+    assert!(server.hold_body_data(3));
     assert_eq!(server.next_event_in_place(2), Ok((true, false)));
     assert_eq!(server.next_event_in_place(3), Ok((false, true)));
-    assert_eq!(server.body_payload_remaining(), None, "CRLF must be parsed");
+    assert!(!server.hold_body_data(1), "CRLF must be parsed");
     server.receive_data(b"\r\n0\r\n\r\n").unwrap();
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
 }
 
 #[test]
-fn held_bytes_are_not_offered_after_eof_but_still_drain() {
+fn held_bytes_are_not_accepted_after_eof_but_still_drain() {
     let mut server = Connection::new(Role::Server, Limits::default());
     server
         .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
-    assert_eq!(server.body_payload_remaining(), Some(4));
+    assert!(server.hold_body_data(4));
     // Bytes held before EOF still precede it.
     server.receive_data(b"").unwrap();
-    assert_eq!(server.body_payload_remaining(), None);
+    assert!(!server.hold_body_data(1));
     assert_eq!(server.next_event_in_place(4), Ok((false, false)));
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
 }
@@ -1728,11 +1737,36 @@ fn a_held_body_ends_the_wait_for_100_continue_when_polled() {
         )
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
-    assert!(server.client_is_waiting_for_100_continue());
-    assert_eq!(server.body_payload_remaining(), Some(2));
+    assert!(server.hold_body_data(2));
     assert!(server.client_is_waiting_for_100_continue());
     server.next_event_in_place(2).unwrap();
     assert!(!server.client_is_waiting_for_100_continue());
+}
+
+// RFC 9110 Section 10.1.1: a response sent before the request content has
+// been read closes the connection; content that has arrived, held or not,
+// keeps it reusable.
+#[test]
+fn a_held_body_counts_as_received_when_the_response_is_sent() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(server.hold_body_data(3));
+    let head = server
+        .send_response(Response {
+            status: StatusCode::from_u16(204).unwrap(),
+            reason: Vec::new(),
+            headers: Headers::new(),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    assert!(!head.to_ascii_lowercase().windows(5).any(|w| w == b"close"));
+    server.end_of_message(Headers::new()).unwrap();
+    server.next_event_in_place(3).unwrap();
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+    server.start_next_cycle().unwrap();
 }
 
 #[test]

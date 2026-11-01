@@ -63,8 +63,6 @@ pub(super) struct PyConnection(
     /// Received `bytes` that lie wholly within body payload, held instead of
     /// copied and returned as `Data` before anything buffered after them.
     VecDeque<Py<PyBytes>>,
-    /// Total length of the held `bytes`.
-    usize,
 );
 
 #[pymethods]
@@ -87,7 +85,6 @@ impl PyConnection {
                 connection
             },
             VecDeque::new(),
-            0,
         ))
     }
 
@@ -105,14 +102,10 @@ impl PyConnection {
     fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
         // Exact `bytes` only: a subclass could change what consumers observe.
         if let Ok(bytes) = data.cast_exact::<PyBytes>()
-            && let Some(remaining) = self.0.body_payload_remaining()
+            && self.0.hold_body_data(bytes.as_bytes().len())
         {
-            let len = bytes.as_bytes().len();
-            if len > 0 && self.2 + len <= remaining {
-                self.1.push_back(bytes.clone().unbind());
-                self.2 += len;
-                return Ok(());
-            }
+            self.1.push_back(bytes.clone().unbind());
+            return Ok(());
         }
         with_buffer(data, |data| self.0.receive_data(data))?.map_err(local_error)
     }
@@ -131,7 +124,6 @@ impl PyConnection {
     fn next_event(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if let Some(data) = self.1.pop_front() {
             let len = data.bind(py).as_bytes().len();
-            self.2 -= len;
             let (chunk_start, chunk_end) = self.0.next_event_in_place(len).map_err(local_error)?;
             return data_to_py(py, data, chunk_start, chunk_end);
         }
@@ -440,6 +432,6 @@ impl PyConnection {
     /// How many received bytes are held but not yet parsed.
     #[getter]
     fn buffered_nbytes(&self) -> usize {
-        self.0.trailing_data().0.len() + self.2
+        self.0.trailing_data().0.len() + self.0.held_body_len()
     }
 }

@@ -274,6 +274,24 @@ def test_held_body_bytes_precede_eof() -> None:
         connection.next_event()
 
 
+@pytest.mark.parametrize("body", [b"abc", bytearray(b"abc")])
+def test_received_body_keeps_the_connection_reusable_whether_held_or_copied(
+    body: bytes | bytearray,
+) -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    connection.receive_data(body)
+    assert connection.buffered_nbytes == 3
+    head = connection.send_response(204, ())
+    assert b"close" not in head.lower()
+    connection.end_of_message()
+    assert connection.next_event() == h11r.Data(b"abc")
+    assert isinstance(connection.next_event(), h11r.EndOfMessage)
+    connection.start_next_cycle()
+
+
 def test_strided_memoryview_inputs_keep_copying_compatibility() -> None:
     client = h11r.Connection(h11r.Role.CLIENT)
     wire = client.send_request(
