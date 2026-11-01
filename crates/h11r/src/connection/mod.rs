@@ -59,6 +59,8 @@ pub struct Connection {
     limits: Limits,
     lenient: bool,
     input: Buffer,
+    /// Body bytes the caller holds in place of `input`, which precede it.
+    held: usize,
     eof: bool,
     peer_version: Option<Version>,
     cycle: Cycle,
@@ -87,6 +89,7 @@ impl Connection {
             limits,
             lenient: false,
             input: Buffer::default(),
+            held: 0,
             eof: false,
             peer_version: None,
             cycle: Cycle::default(),

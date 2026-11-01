@@ -39,6 +39,14 @@ enum Received {
 }
 
 fn drain(connection: &mut Connection, events: &mut Vec<Received>) {
+    assert!(
+        !drain_until_paused(connection, events),
+        "request parsing cannot pause"
+    );
+}
+
+/// Collects events until more data is needed; returns whether it paused.
+fn drain_until_paused(connection: &mut Connection, events: &mut Vec<Received>) -> bool {
     loop {
         match connection.next_event().expect("valid peer input") {
             NextEvent::Event(Event::Request(_)) => events.push(Received::Request),
@@ -51,8 +59,8 @@ fn drain(connection: &mut Connection, events: &mut Vec<Received>) {
                 trailers: end.trailers,
             }),
             NextEvent::Event(event) => panic!("unexpected event {event:?}"),
-            NextEvent::NeedData => break,
-            NextEvent::Paused => panic!("request parsing cannot pause"),
+            NextEvent::NeedData => return false,
+            NextEvent::Paused => return true,
         }
     }
 }
@@ -1618,37 +1626,171 @@ fn eof_is_idempotent_but_cannot_be_followed_by_bytes() {
     assert!(server.receive_data(b"GET /").is_err());
 }
 
+/// Feeds `wire` in `size`-byte reads, holding each read the connection accepts
+/// in place and polling after every read, as the Python binding does.
+fn receive_holding(wire: &[u8], size: usize) -> Vec<Received> {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    let mut events = Vec::new();
+    for part in wire.chunks(size) {
+        if server.hold_body_data(part.len()) {
+            let (chunk_start, chunk_end) = server.next_event_in_place(part.len()).unwrap();
+            events.push(Received::Data {
+                data: part.to_vec(),
+                chunk_start,
+                chunk_end,
+            });
+        } else {
+            server.receive_data(part).unwrap();
+        }
+        drain_until_paused(&mut server, &mut events);
+    }
+    events
+}
+
 #[test]
-fn byte_iterator_input_is_appended_directly() {
+fn held_body_bytes_produce_the_same_events_as_received_bytes() {
+    let wires: [&[u8]; 2] = [
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789GET / HTTP/1.1\r\nHost: x\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n6;x=y\r\nabcdef\r\n4\r\nghij\r\n0\r\nDigest: ok\r\n\r\n",
+    ];
+    for wire in wires {
+        for size in 1..=wire.len() {
+            let mut server = Connection::new(Role::Server, Limits::default());
+            let mut expected = Vec::new();
+            for part in wire.chunks(size) {
+                server.receive_data(part).unwrap();
+                drain_until_paused(&mut server, &mut expected);
+            }
+            assert_eq!(receive_holding(wire, size), expected, "read size {size}");
+        }
+    }
+}
+
+#[test]
+fn bytes_are_held_only_inside_payload_with_nothing_buffered() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    assert!(!server.hold_body_data(1));
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(!server.hold_body_data(1), "bytes are buffered");
+    assert!(matches!(event(&mut server), Event::Data(_)));
+    assert!(!server.hold_body_data(0));
+    assert!(!server.hold_body_data(4), "past the payload");
+    assert!(server.hold_body_data(2));
+    assert!(
+        !server.hold_body_data(2),
+        "held bytes count toward the payload"
+    );
+    assert!(server.hold_body_data(1));
+    assert_eq!(server.held_body_len(), 3);
+
+    assert!(server.next_event_in_place(0).is_err());
+    assert!(server.next_event_in_place(4).is_err());
+    assert_eq!(server.next_event_in_place(2), Ok((false, false)));
+    assert_eq!(server.next_event_in_place(1), Ok((false, false)));
+    assert_eq!(server.held_body_len(), 0);
+    assert!(!server.hold_body_data(1), "payload is complete");
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+}
+
+#[test]
+fn held_chunk_data_carries_chunk_boundaries() {
     let mut server = Connection::new(Role::Server, Limits::default());
     server
-        .receive_data_iter(
-            b"GET /iter HTTP/1.1\r\nHost: example.test\r\n\r\n"
-                .iter()
-                .copied(),
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(matches!(server.next_event(), Ok(NextEvent::NeedData)));
+    assert!(!server.hold_body_data(6), "past the chunk");
+    assert!(server.hold_body_data(2));
+    assert!(server.hold_body_data(3));
+    assert_eq!(server.next_event_in_place(2), Ok((true, false)));
+    assert_eq!(server.next_event_in_place(3), Ok((false, true)));
+    assert!(!server.hold_body_data(1), "CRLF must be parsed");
+    server.receive_data(b"\r\n0\r\n\r\n").unwrap();
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+}
+
+#[test]
+fn held_bytes_are_not_accepted_after_eof_but_still_drain() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(server.hold_body_data(4));
+    // Bytes held before EOF still precede it.
+    server.receive_data(b"").unwrap();
+    assert!(!server.hold_body_data(1));
+    assert_eq!(server.next_event_in_place(4), Ok((false, false)));
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+}
+
+#[test]
+fn a_held_body_ends_the_wait_for_100_continue_when_polled() {
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(
+            b"POST / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\n",
         )
         .unwrap();
-
-    let Event::Request(request) = event(&mut server) else {
-        panic!("expected request")
-    };
-    assert_eq!(request.target, b"/iter");
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(server.hold_body_data(2));
+    assert!(server.client_is_waiting_for_100_continue());
+    server.next_event_in_place(2).unwrap();
+    assert!(!server.client_is_waiting_for_100_continue());
 }
 
+// RFC 9112 Section 6.3 item 8: a response without framing ends at close.
 #[test]
-fn empty_byte_iterator_marks_eof() {
-    let mut server = Connection::new(Role::Server, Limits::default());
-    server.receive_data_iter(std::iter::empty()).unwrap();
-
-    assert!(matches!(event(&mut server), Event::ConnectionClosed));
+fn held_bytes_extend_a_close_delimited_response() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client
+        .send_request(Request {
+            method: Method::GET,
+            target: b"/".to_vec(),
+            headers: headers([(b"Host", b"x")]),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    client.end_of_message(Headers::new()).unwrap();
+    client.receive_data(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+    assert!(matches!(event(&mut client), Event::Response(_)));
+    assert!(client.hold_body_data(5));
+    assert!(client.hold_body_data(6));
+    assert_eq!(client.next_event_in_place(5), Ok((false, false)));
+    assert_eq!(client.next_event_in_place(6), Ok((false, false)));
+    client.receive_data(b"").unwrap();
+    assert!(!client.hold_body_data(1));
+    assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
 }
 
+// RFC 9110 Section 10.1.1: a response sent before the request content has
+// been read closes the connection; content that has arrived, held or not,
+// keeps it reusable.
 #[test]
-fn byte_iterator_input_after_eof_is_rejected() {
+fn a_held_body_counts_as_received_when_the_response_is_sent() {
     let mut server = Connection::new(Role::Server, Limits::default());
-    server.receive_data_iter(std::iter::empty()).unwrap();
-
-    assert!(server.receive_data_iter(*b"G").is_err());
+    server
+        .receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    assert!(server.hold_body_data(3));
+    let head = server
+        .send_response(Response {
+            status: StatusCode::from_u16(204).unwrap(),
+            reason: Vec::new(),
+            headers: Headers::new(),
+            http_version: Version::Http11,
+        })
+        .unwrap();
+    assert!(!head.to_ascii_lowercase().windows(5).any(|w| w == b"close"));
+    server.end_of_message(Headers::new()).unwrap();
+    server.next_event_in_place(3).unwrap();
+    assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
+    server.start_next_cycle().unwrap();
 }
 
 #[test]

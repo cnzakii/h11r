@@ -2,10 +2,10 @@
 
 use super::*;
 use h11r as core;
-use pyo3::buffer::ReadOnlyCell;
 use pyo3::exceptions::PyValueError;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyBytes};
+use std::collections::VecDeque;
 
 /// A Sans-I/O HTTP/1 connection.
 ///
@@ -58,7 +58,12 @@ use pyo3::types::{PyAny, PyBytes};
 ///     ValueError: If any inbound limit is zero.
 #[pyclass(name = "Connection", module = "h11r")]
 #[derive(Debug)]
-pub(super) struct PyConnection(core::Connection);
+pub(super) struct PyConnection(
+    core::Connection,
+    /// Received `bytes` that lie wholly within body payload, held instead of
+    /// copied and returned as `Data` before anything buffered after them.
+    VecDeque<Py<PyBytes>>,
+);
 
 #[pymethods]
 impl PyConnection {
@@ -73,14 +78,20 @@ impl PyConnection {
         let limits = core::Limits::new(max_head_bytes, max_header_count)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let connection = core::Connection::new(role.into(), limits);
-        Ok(Self(if lenient {
-            connection.lenient()
-        } else {
-            connection
-        }))
+        Ok(Self(
+            if lenient {
+                connection.lenient()
+            } else {
+                connection
+            },
+            VecDeque::new(),
+        ))
     }
 
     /// Append bytes received from the peer; empty bytes mark EOF.
+    ///
+    /// A `bytes` object that falls wholly within a message body is not
+    /// copied: it becomes the `data` of its own `Data` event.
     ///
     /// Args:
     ///     data (bytes | bytearray | memoryview): Bytes read from the transport.
@@ -89,13 +100,14 @@ impl PyConnection {
     ///     TypeError: If `data` does not implement the buffer protocol.
     ///     LocalProtocolError: If non-empty data follows EOF.
     fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        with_buffer_bytes(data, |data| match data {
-            BufferBytes::Borrowed(bytes) => self.0.receive_data(bytes),
-            BufferBytes::Cells(cells) => self
-                .0
-                .receive_data_iter(cells.iter().map(ReadOnlyCell::get)),
-        })?
-        .map_err(local_error)
+        // Exact `bytes` only: a subclass could change what consumers observe.
+        if let Ok(bytes) = data.cast_exact::<PyBytes>()
+            && self.0.hold_body_data(bytes.as_bytes().len())
+        {
+            self.1.push_back(bytes.clone().unbind());
+            return Ok(());
+        }
+        with_buffer(data, |data| self.0.receive_data(data))?.map_err(local_error)
     }
 
     /// Return the next peer event or a receive status.
@@ -110,6 +122,11 @@ impl PyConnection {
     ///     RemoteProtocolError: If peer bytes violate HTTP syntax, framing,
     ///         configured limits, or protocol state.
     fn next_event(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(data) = self.1.pop_front() {
+            let len = data.bind(py).as_bytes().len();
+            let (chunk_start, chunk_end) = self.0.next_event_in_place(len).map_err(local_error)?;
+            return data_to_py(py, data, chunk_start, chunk_end);
+        }
         match self
             .0
             .next_event()
@@ -415,6 +432,6 @@ impl PyConnection {
     /// How many received bytes are held but not yet parsed.
     #[getter]
     fn buffered_nbytes(&self) -> usize {
-        self.0.trailing_data().0.len()
+        self.0.trailing_data().0.len() + self.0.held_body_len()
     }
 }

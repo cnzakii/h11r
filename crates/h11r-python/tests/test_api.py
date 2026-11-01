@@ -112,6 +112,186 @@ def test_receive_data_accepts_reused_receive_buffer() -> None:
     assert request_event.headers == ((b"Host", b"example.test"),)
 
 
+LENGTH_UPLOAD = (
+    b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789"
+    b"GET /next HTTP/1.1\r\nHost: x\r\n\r\n"
+)
+CHUNKED_UPLOAD = (
+    b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    b"6;x=y\r\nabcdef\r\n4\r\nghij\r\n0\r\nDigest: ok\r\n\r\n"
+)
+
+
+def _summarize(event: object) -> object:
+    if isinstance(event, h11r.Data):
+        return ("data", event.data, event.chunk_start, event.chunk_end)
+    if isinstance(event, h11r.EndOfMessage):
+        return ("end", tuple(event.trailers))
+    return type(event).__name__
+
+
+def _drain(connection: h11r.Connection) -> list[object]:
+    events = []
+    while (event := connection.next_event()) not in (
+        h11r.ReceiveStatus.NEED_DATA,
+        h11r.ReceiveStatus.PAUSED,
+    ):
+        events.append(event)
+    return events
+
+
+def _merge_data(events: list[object]) -> list[object]:
+    """Joins adjacent Data within one chunk; their split is not meaningful."""
+    merged: list[object] = []
+    for event in events:
+        last = merged[-1] if merged else None
+        if (
+            isinstance(event, tuple)
+            and event[0] == "data"
+            and isinstance(last, tuple)
+            and last[0] == "data"
+            and not last[3]
+            and not event[2]
+        ):
+            merged[-1] = ("data", last[1] + event[1], last[2], event[3])
+        else:
+            merged.append(event)
+    return merged
+
+
+def _receive(parts: Sequence[bytes | bytearray], *, poll_each: bool) -> list[object]:
+    """Feeds `parts`, polling after each one, or only until the head parses
+    so that later body parts queue up before the final drain."""
+    connection = h11r.Connection(h11r.Role.SERVER)
+    events: list[object] = []
+    for part in parts:
+        connection.receive_data(part)
+        if poll_each or not events:
+            events += _drain(connection)
+    summaries = [_summarize(event) for event in events + _drain(connection)]
+    return _merge_data(summaries)
+
+
+@pytest.mark.parametrize(
+    "wire", [LENGTH_UPLOAD, CHUNKED_UPLOAD], ids=["length", "chunked"]
+)
+@pytest.mark.parametrize("poll_each", [True, False], ids=["poll-each", "poll-late"])
+def test_held_body_bytes_match_copied_input_under_any_segmentation(
+    wire: bytes, poll_each: bool
+) -> None:
+    # bytes may be held and handed back as Data.data; bytearray is always
+    # copied. Both must yield the same events, in the same order.
+    for size in range(1, len(wire) + 1):
+        parts = [wire[start : start + size] for start in range(0, len(wire), size)]
+        copied = _receive([bytearray(part) for part in parts], poll_each=poll_each)
+        assert _receive(parts, poll_each=poll_each) == copied, size
+
+
+def test_body_bytes_are_returned_without_copying() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    first, second = b"abcd", b"efgh"
+    connection.receive_data(first)
+    connection.receive_data(second)
+    assert connection.buffered_nbytes == 8
+    events = _drain(connection)
+    assert [type(event) for event in events] == [
+        h11r.Data,
+        h11r.Data,
+        h11r.EndOfMessage,
+    ]
+    assert events[0].data is first
+    assert events[1].data is second
+    assert connection.buffered_nbytes == 0
+
+
+def test_mutable_or_overlong_body_input_is_copied() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    mutable = bytearray(b"ab")
+    connection.receive_data(mutable)
+    mutable[:] = b"zz"
+    overlong = b"cdGET / HTTP/1.1\r\nHost: x\r\n\r\n"
+    connection.receive_data(overlong)
+
+    events = _drain(connection)
+    # Both went to the receive buffer, so they surface as one Data event,
+    # unaffected by the later mutation.
+    assert [_summarize(event) for event in events] == [
+        ("data", b"abcd", False, False),
+        ("end", ()),
+    ]
+    assert connection.peer_state is h11r.State.DONE
+
+
+def test_held_body_bytes_precede_bytes_buffered_after_them() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    held = b"ab"
+    connection.receive_data(held)
+    connection.receive_data(b"cdGET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+    events = _drain(connection)
+    assert [_summarize(event) for event in events] == [
+        ("data", b"ab", False, False),
+        ("data", b"cd", False, False),
+        ("end", ()),
+    ]
+    assert events[0].data is held
+
+
+def test_bytes_subclass_body_input_is_copied() -> None:
+    class Tagged(bytes):
+        pass
+
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+    connection.receive_data(Tagged(b"ab"))
+    data = connection.next_event()
+    assert isinstance(data, h11r.Data)
+    assert type(data.data) is bytes
+
+
+def test_held_body_bytes_precede_eof() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    connection.receive_data(b"ab")
+    connection.receive_data(b"")
+    with pytest.raises(h11r.LocalProtocolError):
+        connection.receive_data(b"cd")
+    data = connection.next_event()
+    assert isinstance(data, h11r.Data)
+    assert data.data == b"ab"
+    with pytest.raises(h11r.RemoteProtocolError, match="EOF"):
+        connection.next_event()
+
+
+@pytest.mark.parametrize("body", [b"abc", bytearray(b"abc")])
+def test_received_body_keeps_the_connection_reusable_whether_held_or_copied(
+    body: bytes | bytearray,
+) -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+
+    connection.receive_data(body)
+    assert connection.buffered_nbytes == 3
+    head = connection.send_response(204, ())
+    assert b"close" not in head.lower()
+    connection.end_of_message()
+    assert connection.next_event() == h11r.Data(b"abc")
+    assert isinstance(connection.next_event(), h11r.EndOfMessage)
+    connection.start_next_cycle()
+
+
 def test_strided_memoryview_inputs_keep_copying_compatibility() -> None:
     client = h11r.Connection(h11r.Role.CLIENT)
     wire = client.send_request(

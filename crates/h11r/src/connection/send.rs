@@ -181,7 +181,7 @@ impl Connection {
         // is one; content that has all arrived and awaits only its events is
         // not.
         let unread = match self.cycle.reader {
-            Reader::Fixed(remaining) => remaining > self.input.as_slice().len(),
+            Reader::Fixed(remaining) => remaining > self.held + self.input.as_slice().len(),
             _ => true,
         };
         if framing == Framing::CloseDelimited

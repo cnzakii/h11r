@@ -38,10 +38,6 @@ impl Buffer {
         self.compact();
         self.bytes.extend_from_slice(data);
     }
-    pub(crate) fn extend_iter(&mut self, data: impl IntoIterator<Item = u8>) {
-        self.compact();
-        self.bytes.extend(data);
-    }
     fn compact(&mut self) {
         // Moving no more live bytes than were discarded keeps compaction
         // amortized linear across adversarial receive boundaries.

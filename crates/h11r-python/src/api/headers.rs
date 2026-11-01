@@ -13,15 +13,9 @@ use pyo3::types::{PyAny, PyBool, PyBytes, PyIterator, PyList, PyString, PyTuple}
 /// `get_all()` look up names without building the pairs, and iteration,
 /// indexing, and comparison build them once. Construct one as
 /// `Headers(fields=None)` from `(name, value)` pairs to reuse fields across
-/// sends without converting them again; it compares equal to a tuple of the
-/// same byte pairs.
-#[pyclass(
-    name = "Headers",
-    module = "h11r",
-    frozen,
-    sequence,
-    skip_from_py_object
-)]
+/// sends without converting or checking them again; it compares equal to a
+/// tuple of the same byte pairs.
+#[pyclass(name = "Headers", module = "h11r", frozen, sequence)]
 pub(super) struct PyHeaders {
     fields: core::Headers,
     /// The `(name, value)` pairs, built on first use.
@@ -211,25 +205,39 @@ pub(super) fn extract_headers(value: Option<&Bound<'_, PyAny>>) -> PyResult<core
     // Sized for typical fields so a request's headers rarely regrow.
     let fields = value.len().unwrap_or(0);
     let mut headers = core::Headers::with_capacity(fields, fields * 64);
-    // A plain loop: `collect()` would ask the Python iterator for a length
-    // hint, which costs a Python-level call per header section.
-    for item in value.try_iter()? {
-        let item = item?;
-        let pair = item
-            .cast::<PyTuple>()
-            .map_err(|_| PyTypeError::new_err("each header must be a 2-tuple"))?;
-        if pair.len() != 2 {
-            return Err(PyTypeError::new_err(
-                "each header must contain name and value",
-            ));
+    // A tuple is read in place, without a Python iterator. A plain loop
+    // otherwise: `collect()` would ask the iterator for a length hint, which
+    // costs a Python-level call per header section.
+    if let Ok(pairs) = value.cast_exact::<PyTuple>() {
+        for pair in pairs.iter_borrowed() {
+            push_pair(&mut headers, &pair)?;
         }
-        with_text_or_buffer(&*pair.get_borrowed_item(0)?, |name| {
-            with_text_or_buffer(&*pair.get_borrowed_item(1)?, |value| {
-                headers.push(name, value)
-            })
-        })??;
+    } else {
+        for pair in value.try_iter()? {
+            push_pair(&mut headers, &pair?)?;
+        }
     }
     Ok(headers)
+}
+
+fn push_pair(headers: &mut core::Headers, item: &Bound<'_, PyAny>) -> PyResult<()> {
+    let pair = item
+        .cast::<PyTuple>()
+        .map_err(|_| PyTypeError::new_err("each header must be a 2-tuple"))?;
+    if pair.len() != 2 {
+        return Err(PyTypeError::new_err(
+            "each header must contain name and value",
+        ));
+    }
+    let (name, value) = (pair.get_borrowed_item(0)?, pair.get_borrowed_item(1)?);
+    // Exact `bytes`, the common case, skip the text and buffer checks.
+    if let (Ok(name), Ok(value)) = (name.cast_exact::<PyBytes>(), value.cast_exact::<PyBytes>()) {
+        headers.push(name.as_bytes(), value.as_bytes());
+        return Ok(());
+    }
+    with_text_or_buffer(&name, |name| {
+        with_text_or_buffer(&value, |value| headers.push(name, value))
+    })?
 }
 
 /// Runs `consume` over a field name to look up. Any `str` is accepted: unlike

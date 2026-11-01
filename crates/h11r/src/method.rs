@@ -90,7 +90,22 @@ impl fmt::Display for InvalidMethod {
 
 impl Error for InvalidMethod {}
 
-pub(crate) const fn is_token_byte(byte: u8) -> bool {
+/// RFC 9110 Section 5.6.2 `tchar`, looked up once per byte.
+static TOKEN_BYTES: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        table[byte] = is_tchar(byte as u8);
+        byte += 1;
+    }
+    table
+};
+
+pub(crate) fn is_token_byte(byte: u8) -> bool {
+    TOKEN_BYTES[usize::from(byte)]
+}
+
+const fn is_tchar(byte: u8) -> bool {
     matches!(
         byte,
         b'a'..=b'z'
@@ -116,7 +131,12 @@ pub(crate) const fn is_token_byte(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::Method;
+    use super::{Method, is_tchar, is_token_byte};
+
+    #[test]
+    fn the_token_table_matches_tchar() {
+        assert!((0..=u8::MAX).all(|byte| is_token_byte(byte) == is_tchar(byte)));
+    }
 
     #[test]
     fn accepts_standard_and_extension_methods_without_normalizing_them() {

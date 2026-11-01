@@ -87,8 +87,7 @@ impl From<PyRole> for core::Role {
     eq,
     hash,
     frozen,
-    rename_all = "SCREAMING_SNAKE_CASE",
-    skip_from_py_object
+    rename_all = "SCREAMING_SNAKE_CASE"
 )]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum PyState {
@@ -131,8 +130,7 @@ impl From<core::State> for PyState {
     eq,
     hash,
     frozen,
-    rename_all = "SCREAMING_SNAKE_CASE",
-    skip_from_py_object
+    rename_all = "SCREAMING_SNAKE_CASE"
 )]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum PyReceiveStatus {
