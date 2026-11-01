@@ -76,11 +76,33 @@ CHUNKED_UPLOAD = (
 )
 API_RESPONSE = head(b"HTTP/1.1 200 OK", API_RESPONSE_HEADERS) + JSON_BODY
 
+# Large bodies move in 64 KiB transport reads and writes, each its own object
+# as a socket read or file read would return it.
+LARGE_BODY_PARTS = tuple(bytes([65 + index]) * 65536 for index in range(16))
+LARGE_BODY_SIZE = sum(map(len, LARGE_BODY_PARTS))
+UPLOAD = (
+    head(
+        b"POST /api/v1/uploads HTTP/1.1",
+        (
+            *API_REQUEST_HEADERS,
+            (b"Content-Type", b"application/octet-stream"),
+            (b"Content-Length", b"%d" % LARGE_BODY_SIZE),
+        ),
+    ),
+    *LARGE_BODY_PARTS,
+)
+DOWNLOAD_HEADERS = (
+    (b"Content-Type", b"application/octet-stream"),
+    (b"Content-Length", b"%d" % LARGE_BODY_SIZE),
+    *API_RESPONSE_HEADERS[2:],
+)
+
 SCENARIOS = (
     ("api_get", (API_GET,)),
     ("json_post_1k", (JSON_POST,)),
     ("fragmented_get_16b", FRAGMENTED_GET),
     ("chunked_upload_64k", CHUNKED_UPLOAD),
+    ("upload_1m", UPLOAD),
 )
 
 
@@ -157,6 +179,54 @@ class H11ServerCycle:
         )
         self.connection.start_next_cycle()
         return method, event_count, body_bytes, last_event, response
+
+
+class CandidateDownload:
+    """Answers a GET with a 1 MiB body, framing each part without copying it."""
+
+    __slots__ = ("connection",)
+
+    def __init__(self) -> None:
+        self.connection = candidate.Connection(candidate.Role.SERVER)
+
+    def __call__(self) -> list[bytes]:
+        self.connection.receive_data(API_GET)
+        self.connection.next_event()
+        self.connection.next_event()
+        wire = [self.connection.send_response(200, DOWNLOAD_HEADERS, reason=b"OK")]
+        for part in LARGE_BODY_PARTS:
+            wire.extend(self.connection.send_data_parts(part))
+        wire.append(self.connection.end_of_message())
+        self.connection.start_next_cycle()
+        return wire
+
+
+class H11Download:
+    """Answers a GET with a 1 MiB body, framing each part without copying it."""
+
+    __slots__ = ("connection",)
+
+    def __init__(self) -> None:
+        self.connection = reference.Connection(reference.SERVER)
+
+    def __call__(self) -> list[bytes]:
+        self.connection.receive_data(API_GET)
+        self.connection.next_event()
+        self.connection.next_event()
+        wire = [
+            self.connection.send(
+                reference.Response(
+                    status_code=200, headers=DOWNLOAD_HEADERS, reason=b"OK"
+                )
+            )
+        ]
+        for part in LARGE_BODY_PARTS:
+            wire.extend(
+                self.connection.send_with_data_passthrough(reference.Data(data=part))
+            )
+        wire.append(self.connection.send(reference.EndOfMessage()))
+        self.connection.start_next_cycle()
+        return wire
 
 
 class CandidateRoundTrip:
@@ -245,6 +315,7 @@ def check_workloads() -> None:
         "json_post_1k": (b"POST", 3, len(POST_BODY), ()),
         "fragmented_get_16b": (b"GET", 2, 0, ()),
         "chunked_upload_64k": (b"POST", 18, 64 * 1024, ((b"digest", b"ok"),)),
+        "upload_1m": (b"POST", 18, LARGE_BODY_SIZE, ()),
     }
     for name, parts in SCENARIOS:
         for workload in (CandidateServerCycle(parts), H11ServerCycle(parts)):
@@ -252,6 +323,11 @@ def check_workloads() -> None:
                 method, count, size, end, response = workload()
                 assert (method, count, size, trailers(end)) == expected[name]
                 assert response == API_RESPONSE
+
+    download = head(b"HTTP/1.1 200 OK", DOWNLOAD_HEADERS) + b"".join(LARGE_BODY_PARTS)
+    for workload in (CandidateDownload(), H11Download()):
+        for _ in range(2):
+            assert b"".join(workload()) == download
 
     for workload in (CandidateRoundTrip(), H11RoundTrip()):
         for _ in range(2):
@@ -293,7 +369,10 @@ def main() -> None:
         },
         add_cmdline_args=add_cmdline_args,
     )
-    choices = [name for name, _ in SCENARIOS] + ["client_server_round_trip"]
+    choices = [name for name, _ in SCENARIOS] + [
+        "download_1m",
+        "client_server_round_trip",
+    ]
     runner.argparser.add_argument("--scenario", choices=choices)
     runner.argparser.add_argument("--implementation", choices=("h11r", "h11"))
     args = runner.parse_args()
@@ -304,6 +383,11 @@ def main() -> None:
             runner.bench_func(f"scenario/{name}/h11r", CandidateServerCycle(parts))
         if args.implementation in (None, "h11"):
             runner.bench_func(f"scenario/{name}/h11-0.16.0", H11ServerCycle(parts))
+    if args.scenario in (None, "download_1m"):
+        if args.implementation in (None, "h11r"):
+            runner.bench_func("scenario/download_1m/h11r", CandidateDownload())
+        if args.implementation in (None, "h11"):
+            runner.bench_func("scenario/download_1m/h11-0.16.0", H11Download())
     if args.scenario in (None, "client_server_round_trip"):
         if args.implementation in (None, "h11r"):
             runner.bench_func(

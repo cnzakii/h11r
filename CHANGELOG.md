@@ -4,6 +4,19 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-01
+
+### Changed
+
+- Python: `receive_data()` keeps a `bytes` object that lies wholly within a
+  message body instead of copying it, and the next `Data` event's `data` is
+  that same object. Consecutive such reads each produce their own `Data`
+  event rather than one combined event. A large body received in `bytes`
+  reads takes about half the CPU time it did; `bytearray` and `memoryview`
+  input is copied as before.
+- Header fields are checked once, as they are added, instead of on every
+  send, so a `Headers` reused across responses is not scanned again.
+
 ## [0.3.0] - 2026-10-31
 
 ### Added
