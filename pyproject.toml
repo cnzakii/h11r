@@ -16,7 +16,7 @@ test = [
 ]
 benchmark = [
     "psutil>=7,<8",
-    "pyperf>=2.10,<3",
+    "pyperf>=2.11.0,<3",
     "pytest-codspeed>=5,<6",
 ]
 
