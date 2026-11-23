@@ -4,6 +4,8 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-23
+
 ### Changed
 
 - A final response sent before the request content has been read no longer
@@ -21,7 +23,8 @@ User-visible changes to h11r are recorded here.
   buffer once into a `bytes` object and treats it like received `bytes`,
   instead of copying it into the parser and again into the `Data` event. A
   64 KiB body read from a reused receive buffer takes about a third of the
-  time it did.
+  time it did. As with `bytes`, consecutive such reads within a body each
+  produce their own `Data` event.
 
 ### Removed
 

@@ -119,4 +119,6 @@ runtime, and application overhead, and its result does not predict every
 workload or machine.
 
 [Benchmark script ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/crates/h11r-python/benchmarks/compare_h11.py) ·
-[Raw `pyperf` result ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/docs/assets/python-benchmark.json)
+[Raw `pyperf` result ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/docs/assets/python-benchmark.json) ·
+[Latency and memory script ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/crates/h11r-python/benchmarks/latency_memory.py) ·
+[Latency and memory result ↗](https://github.com/cnzakii/h11r/blob/{{ git.commit }}/docs/assets/python-latency-memory.json)
