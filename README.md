@@ -29,7 +29,7 @@ your calls into bytes to send; your code decides how and when those bytes move.
 ## Why h11r
 
 - **Fast.** On browser-to-API traffic and 1 MiB transfers, `h11r` completes
-  HTTP/1.1 exchanges 13–32× faster than the pure-Python [h11][h11] in every
+  HTTP/1.1 exchanges 13–39× faster than the pure-Python [h11][h11] in every
   [measured scenario](#performance).
 - **Strict about message boundaries.** Ambiguous framing such as
   `Transfer-Encoding` with `Content-Length` is rejected, request targets must
@@ -151,32 +151,34 @@ keep-alive connection between requests.
 <!-- benchmark-table:start -->
 | Scenario | h11r (µs/op) | h11 (µs/op) | Relative throughput |
 | --- | ---: | ---: | ---: |
-| API GET · 10 fields | 1.28 | 28.51 | 22.4× |
-| JSON POST · 1 KiB | 1.47 | 32.12 | 21.8× |
-| Fragmented GET · 16 B reads | 3.32 | 47.24 | 14.2× |
-| Chunked upload · 64 KiB | 6.72 | 86.94 | 12.9× |
-| Upload · 1 MiB in 64 KiB reads | 4.19 | 131.77 | 31.5× |
-| Download · 1 MiB in 64 KiB writes | 1.86 | 42.62 | 22.9× |
-| TechEmpower Plaintext · 16 pipelined | 10.64 | 293.50 | 27.6× |
-| Client/server round trip | 2.13 | 54.13 | 25.4× |
+| API GET · 10 fields | 3.23 | 99.53 | 30.8× |
+| JSON POST · 1 KiB | 3.82 | 111.95 | 29.3× |
+| Fragmented GET · 16 B reads | 8.01 | 149.50 | 18.7× |
+| Chunked upload · 64 KiB | 20.68 | 275.27 | 13.3× |
+| Upload · 1 MiB in 64 KiB reads | 10.85 | 315.73 | 29.1× |
+| Download · 1 MiB in 64 KiB writes | 4.68 | 141.76 | 30.3× |
+| TechEmpower Plaintext · 16 pipelined | 30.31 | 1170.63 | 38.6× |
+| Client/server round trip | 5.14 | 189.82 | 37.0× |
 
-_Environment: h11r 0.3.1 · h11 0.16.0 · CPython 3.13.12 (64-bit) · Apple M4 · macOS-27.2.1-arm64-arm-64bit-Mach-O · 2026-11-22_
+_Environment: h11r 0.4.0 · h11 0.16.0 · CPython 3.13.5 (64-bit) · Intel(R) Xeon(R) Platinum 8336C CPU @ 2.30GHz · Linux x86_64 · 2026-11-23_
 
 | Measurement | h11r | h11 | h11 ÷ h11r |
 | --- | ---: | ---: | ---: |
-| Round-trip latency · P50 | 2.17 µs | 53.17 µs | 24.5× |
-| Round-trip latency · P99 | 2.58 µs | 63.08 µs | 24.4× |
-| Memory per idle connection | 0.78 KiB | 0.94 KiB | 1.2× |
+| Round-trip latency · P50 | 5.06 µs | 183.48 µs | 36.3× |
+| Round-trip latency · P99 | 10.15 µs | 288.11 µs | 28.4× |
+| Memory per idle connection | 0.75 KiB | 0.94 KiB | 1.2× |
 
-_Environment: h11r 0.3.1 · h11 0.16.0 · CPython 3.13.12 · Apple M4 · macOS-27.2.1-arm64-arm-64bit-Mach-O · 2026-11-22_
+_Environment: h11r 0.4.0 · h11 0.16.0 · CPython 3.13.5 · Intel(R) Xeon(R) Platinum 8336C CPU @ 2.30GHz · Linux x86_64 · 2026-11-23_
 <!-- benchmark-table:end -->
 
 These are protocol-layer measurements. They exclude sockets, TLS, event-loop
 scheduling, and application work, so end-to-end gains depend on how much of
 your program's time HTTP/1.1 processing takes.
 
-Inspect the [benchmark source][benchmark-script] and [raw result][benchmark-results],
-or follow the
+Inspect the benchmark sources ([throughput][benchmark-script],
+[latency and memory][latency-script]) and raw results
+([throughput][benchmark-results], [latency and memory][latency-results]), or
+follow the
 [reproduction steps](https://github.com/cnzakii/h11r/blob/main/CONTRIBUTING.md#performance-changes).
 
 ## Contributing
@@ -190,6 +192,8 @@ MIT
 
 [benchmark-results]: https://github.com/cnzakii/h11r/blob/main/docs/assets/python-benchmark.json
 [benchmark-script]: https://github.com/cnzakii/h11r/blob/main/crates/h11r-python/benchmarks/compare_h11.py
+[latency-results]: https://github.com/cnzakii/h11r/blob/main/docs/assets/python-latency-memory.json
+[latency-script]: https://github.com/cnzakii/h11r/blob/main/crates/h11r-python/benchmarks/latency_memory.py
 [first-client-guide]: https://h11r.readthedocs.io/en/stable/getting-started/
 [round-trip-guide]: https://h11r.readthedocs.io/en/stable/round-trip/
 [upgrade-example]: https://github.com/cnzakii/h11r/blob/main/examples/python/websocket_upgrade.py

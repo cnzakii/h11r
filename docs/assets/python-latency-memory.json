@@ -1,24 +1,25 @@
 {
   "metadata": {
-    "h11r_version": "0.3.1",
+    "h11r_version": "0.4.0",
     "h11_version": "0.16.0",
-    "python_version": "3.13.12",
-    "machine_name": "Apple M4",
-    "platform": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
-    "date": "2026-11-22",
+    "python_version": "3.13.5",
+    "machine_name": "Intel(R) Xeon(R) Platinum 8336C CPU @ 2.30GHz",
+    "platform": "Linux x86_64",
+    "date": "2026-11-23",
     "samples": 200000,
+    "latency_runs": 5,
     "idle_connections": 20000
   },
   "results": {
     "h11r": {
-      "p50_us": 2.167,
-      "p99_us": 2.584,
-      "idle_connection_kib": 0.784
+      "p50_us": 5.057,
+      "p99_us": 10.15,
+      "idle_connection_kib": 0.7524
     },
     "h11": {
-      "p50_us": 53.166,
-      "p99_us": 63.084,
-      "idle_connection_kib": 0.9392
+      "p50_us": 183.484,
+      "p99_us": 288.11,
+      "idle_connection_kib": 0.9372
     }
   }
 }

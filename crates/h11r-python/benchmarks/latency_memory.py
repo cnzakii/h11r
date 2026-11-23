@@ -32,6 +32,7 @@ from compare_h11 import (
     CandidateRoundTrip,
     H11RoundTrip,
     machine_name,
+    platform_name,
 )
 
 IMPLEMENTATIONS = ("h11r", "h11")
@@ -134,7 +135,7 @@ def main() -> None:
             "h11_version": reference.__version__,
             "python_version": platform.python_version(),
             "machine_name": machine_name(),
-            "platform": platform.platform(),
+            "platform": platform_name(),
             "date": date.today().isoformat(),
             "samples": SAMPLES,
             "latency_runs": LATENCY_RUNS,

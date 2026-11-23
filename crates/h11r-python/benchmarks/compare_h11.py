@@ -428,7 +428,22 @@ def machine_name() -> str:
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
+    # On Linux, platform.processor() names only the architecture.
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8") as cpuinfo:
+            for line in cpuinfo:
+                key, _, value = line.partition(":")
+                if key.strip() == "model name" and value.strip():
+                    return value.strip()
+    except OSError:
+        pass
     return platform.processor() or platform.machine()
+
+
+def platform_name() -> str:
+    # The operating system and architecture only: a kernel release can name
+    # the host's private build.
+    return f"{platform.system()} {platform.machine()}"
 
 
 def main() -> None:
@@ -447,6 +462,7 @@ def main() -> None:
             "h11r_version": candidate.__version__,
             "h11_version": reference.__version__,
             "machine_name": machine_name(),
+            "platform": platform_name(),
         },
         add_cmdline_args=add_cmdline_args,
     )
