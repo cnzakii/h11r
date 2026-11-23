@@ -8,8 +8,8 @@ use crate::wire::{
     validate_trailers, write_headers,
 };
 use crate::{
-    DataParts, DataPrefix, Headers, InformationalResponse, LocalProtocolError, Method, Request,
-    Response, Role, State, Version,
+    DataParts, DataPrefix, Headers, InformationalResponse, LocalProtocolError, Request, Response,
+    Role, State, Version,
 };
 
 impl Connection {
@@ -58,6 +58,9 @@ impl Connection {
             upgrades,
         );
         self.cycle.writer = Some(framing);
+        // RFC 9112 Section 6.3 item 7: such a request has no content.
+        self.cycle.no_content = (!fields.has_framing())
+            .then_some("a request without Content-Length or Transfer-Encoding has no content");
         Ok(serialize_request(&request, fields.host_at))
     }
 
@@ -150,6 +153,15 @@ impl Connection {
             headers.retain(|name, _| !name.eq_ignore_ascii_case(b"transfer-encoding"));
         }
         let declared = fields.has_framing() && !stripped;
+        let no_content = if self.request_is(RequestKind::Head) {
+            Some("a response to a HEAD request has no content")
+        } else {
+            match status.as_u16() {
+                204 | 304 => Some("a 204 or 304 response has no content"),
+                205 => Some("a 205 response has no content"),
+                _ => None,
+            }
+        };
         let framing = if bodyless {
             if declared {
                 declared_framing(version)?;
@@ -177,15 +189,21 @@ impl Connection {
         self.advance_local(self.final_response_event(status))?;
         // Every reason to close is recorded in the state first, so the head
         // states exactly whether the connection persists. RFC 9110 Section
-        // 10.1.1: responding before the request content has been fully read
-        // is one; content that has all arrived and awaits only its events is
-        // not.
-        let unread = match self.cycle.reader {
-            Reader::Fixed(remaining) => remaining > self.held + self.input.as_slice().len(),
-            _ => true,
-        };
+        // 10.1.1 leaves a response sent before the request content has been
+        // read to say whether the server will close or read on, so the caller
+        // decides. Unread content forces closure only when it can never
+        // arrive: the peer already closed, or the client is still awaiting
+        // 100 Continue and has sent none. RFC 9110 Section 15.5.9: a 408
+        // means the server stopped waiting and will close.
+        let received = self.held + self.input.as_slice().len();
+        let unread = self.peer_state() == State::SendBody
+            && match self.cycle.reader {
+                Reader::Fixed(remaining) => remaining > received,
+                _ => true,
+            };
         if framing == Framing::CloseDelimited
-            || (self.peer_state() == State::SendBody && unread)
+            || (unread && (self.eof || (self.cycle.waiting_for_continue && received == 0)))
+            || status.as_u16() == 408
             || fields.close
         {
             self.state.disable_keep_alive();
@@ -202,123 +220,8 @@ impl Connection {
         }
         // RFC 9110 Section 9.3.6: a tunnel replaces the message body.
         self.cycle.writer = (!connect).then_some(framing);
+        self.cycle.no_content = no_content;
         Ok(serialize_response(version, status, &reason, &headers))
-    }
-
-    /// Serializes a complete client request: its head, `body`, and the end of
-    /// the message.
-    ///
-    /// A request without `Content-Length` or `Transfer-Encoding` gets
-    /// `Content-Length` when `body` is non-empty or the method defines
-    /// content (`POST`, `PUT`, `PATCH`), as RFC 9110 Section 8.6 recommends.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalProtocolError`] under the conditions of
-    /// [`Connection::send_request`], or if `body` does not match the request
-    /// framing. The connection is unchanged after an error.
-    pub fn send_request_with_body(
-        &mut self,
-        request: Request,
-        body: &[u8],
-    ) -> Result<Vec<u8>, LocalProtocolError> {
-        let framing = self.send_request_with_body_framing(request, body.len())?;
-        Ok(join_framing(framing, body))
-    }
-
-    #[doc(hidden)]
-    /// Returns the bytes before and after a body of `length` bytes for
-    /// [`Connection::send_request_with_body`], so a binding can write the
-    /// body straight into its own buffer.
-    ///
-    /// # Errors
-    ///
-    /// As [`Connection::send_request_with_body`].
-    pub fn send_request_with_body_framing(
-        &mut self,
-        mut request: Request,
-        length: usize,
-    ) -> Result<(Vec<u8>, Vec<u8>), LocalProtocolError> {
-        let expects_content = [Method::POST, Method::PUT, Method::PATCH].contains(&request.method);
-        if (expects_content || length != 0) && !has_framing_fields(&request.headers) {
-            request.headers.push(b"Content-Length", length.to_string());
-        }
-        self.send_complete(|connection| connection.send_request(request), length)
-    }
-
-    /// Serializes a complete final response: its head, `body`, and the end of
-    /// the message.
-    ///
-    /// A response without `Content-Length` or `Transfer-Encoding` gets
-    /// `Content-Length` unless its status or request method forbids content,
-    /// so a known body is never chunked or close-delimited. A successful
-    /// `CONNECT` response returns only its head, where the tunnel starts.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalProtocolError`] under the conditions of
-    /// [`Connection::send_response`], or if `body` does not match the response
-    /// framing, including any body for a response that cannot carry content.
-    /// The connection is unchanged after an error.
-    pub fn send_response_with_body(
-        &mut self,
-        response: Response,
-        body: &[u8],
-    ) -> Result<Vec<u8>, LocalProtocolError> {
-        let framing = self.send_response_with_body_framing(response, body.len())?;
-        Ok(join_framing(framing, body))
-    }
-
-    #[doc(hidden)]
-    /// Returns the bytes before and after a body of `length` bytes for
-    /// [`Connection::send_response_with_body`], so a binding can write the
-    /// body straight into its own buffer.
-    ///
-    /// # Errors
-    ///
-    /// As [`Connection::send_response_with_body`].
-    pub fn send_response_with_body_framing(
-        &mut self,
-        mut response: Response,
-        length: usize,
-    ) -> Result<(Vec<u8>, Vec<u8>), LocalProtocolError> {
-        if !has_framing_fields(&response.headers) && !self.response_has_no_body(response.status) {
-            response.headers.push(b"Content-Length", length.to_string());
-        }
-        self.send_complete(|connection| connection.send_response(response), length)
-    }
-
-    /// Frames a head, a body of `length` bytes, and the end of message as
-    /// one write, restoring the connection if any step fails so no partial
-    /// message is committed.
-    fn send_complete(
-        &mut self,
-        head: impl FnOnce(&mut Self) -> Result<Vec<u8>, LocalProtocolError>,
-        length: usize,
-    ) -> Result<(Vec<u8>, Vec<u8>), LocalProtocolError> {
-        let saved = (self.state, self.cycle.clone());
-        let result = head(self).and_then(|mut before| {
-            // A successful CONNECT becomes a tunnel at the end of its head.
-            if self.local_state() == State::SwitchedProtocol {
-                return if length == 0 {
-                    Ok((before, Vec::new()))
-                } else {
-                    Err(local("a successful CONNECT response cannot carry content"))
-                };
-            }
-            let mut after = Vec::new();
-            if length != 0 {
-                let (prefix, suffix) = self.send_data_framing(length)?;
-                before.extend_from_slice(&prefix);
-                after.extend_from_slice(suffix);
-            }
-            after.extend(self.end_of_message(Headers::new())?);
-            Ok((before, after))
-        });
-        if result.is_err() {
-            (self.state, self.cycle) = saved;
-        }
-        result
     }
 
     /// Serializes body bytes according to the selected message framing.
@@ -377,7 +280,13 @@ impl Connection {
                 DataPrefix::default(),
                 b"",
             ),
-            Framing::Fixed(_) => return Err(local("body exceeds Content-Length")),
+            Framing::Fixed(_) => {
+                return Err(local(
+                    self.cycle
+                        .no_content
+                        .unwrap_or("body exceeds Content-Length"),
+                ));
+            }
             Framing::CloseDelimited => (Framing::CloseDelimited, DataPrefix::default(), b""),
             Framing::Chunked if length == 0 => (Framing::Chunked, DataPrefix::default(), b""),
             Framing::Chunked => (Framing::Chunked, DataPrefix::chunk_size(length), b"\r\n"),
@@ -423,12 +332,4 @@ impl Connection {
         self.cycle.waiting_for_continue = false;
         Ok(bytes)
     }
-}
-
-/// Joins framing around `body`, copying the body once.
-fn join_framing((mut out, after): (Vec<u8>, Vec<u8>), body: &[u8]) -> Vec<u8> {
-    out.reserve_exact(body.len() + after.len());
-    out.extend_from_slice(body);
-    out.extend_from_slice(&after);
-    out
 }

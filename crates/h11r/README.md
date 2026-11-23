@@ -48,16 +48,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NextEvent::Event(Event::EndOfMessage(_))
     ));
 
-    // A complete response in one call; `Content-Length` is added for the body.
-    let wire = server.send_response_with_body(
-        Response {
-            status: StatusCode::from_u16(200)?,
-            reason: b"OK".to_vec(),
-            headers: Headers::from([("Content-Type", "text/plain")]),
-            http_version: Version::Http11,
-        },
-        b"hello",
-    )?;
+    // A response is a head, its body, and the end of the message.
+    let mut wire = server.send_response(Response {
+        status: StatusCode::from_u16(200)?,
+        reason: b"OK".to_vec(),
+        headers: Headers::from([("Content-Type", "text/plain"), ("Content-Length", "5")]),
+        http_version: Version::Http11,
+    })?;
+    wire.extend(server.send_data(b"hello")?);
+    wire.extend(server.end_of_message(Headers::new())?);
 
     // A body can arrive as any number of `Data` events.
     client.receive_data(&wire)?;
@@ -91,8 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   and call `start_next_cycle`, or hand `trailing_data` to the protocol selected
   by Upgrade or CONNECT.
 - Write every byte returned by a send method, in order, before the next send.
-  `send_request_with_body` and `send_response_with_body` return a complete
-  message; otherwise follow a head with `send_data` and `end_of_message`.
+  Follow a head with any number of `send_data` calls and `end_of_message`.
 - `Headers` keeps fields in order with their original casing; build it from
   pairs such as `Headers::from([("Host", "example.test")])`.
 - `RemoteProtocolError` reports invalid peer input. A server can answer with

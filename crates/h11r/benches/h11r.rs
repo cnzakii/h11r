@@ -268,11 +268,10 @@ fn benchmarks(c: &mut Criterion) {
     body.bench_function("complete_response", |b| {
         b.iter(|| {
             let mut connection = server_awaiting_response();
-            black_box(
-                connection
-                    .send_response_with_body(response(200, Headers::new()), black_box(LARGE_BODY))
-                    .unwrap(),
-            );
+            let length = headers([(b"Content-Length", b"65536")]);
+            black_box(connection.send_response(response(200, length)).unwrap());
+            black_box(connection.send_data(black_box(LARGE_BODY)).unwrap());
+            black_box(connection.end_of_message(Headers::new()).unwrap());
         })
     });
     body.finish();

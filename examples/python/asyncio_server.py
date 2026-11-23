@@ -182,10 +182,8 @@ async def handle_connection(
                 incoming = await connection.read_request()
             except RequestTooLarge:
                 # Stop reading an oversized body, send a final response, and
-                # close. The application chooses to close, so it says so: h11r
-                # adds Connection: close itself only while body bytes are still
-                # unread, which is not the case when the limit is crossed by the
-                # final fragment.
+                # close. Whether to read the rest or close is the
+                # application's choice, so it says so with Connection: close.
                 await connection.send_response(
                     413,
                     b"request body too large\n",

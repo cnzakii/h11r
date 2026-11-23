@@ -839,9 +839,13 @@ fn http10_messages_persist_only_with_the_legacy_keep_alive_option() {
     };
     let mut kept = server(b"Connection: keep-alive\r\n");
     assert_eq!(kept.peer_state(), State::Done);
+    let mut wire = kept
+        .send_response(response(200, headers([(b"Content-Length", b"2")])))
+        .unwrap();
+    wire.extend(kept.send_data(b"ok").unwrap());
+    wire.extend(kept.end_of_message(Headers::new()).unwrap());
     assert_eq!(
-        kept.send_response_with_body(response(200, Headers::new()), b"ok")
-            .unwrap(),
+        wire,
         b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok"
     );
     kept.start_next_cycle().unwrap();
@@ -1767,9 +1771,8 @@ fn held_bytes_extend_a_close_delimited_response() {
     assert!(matches!(event(&mut client), Event::EndOfMessage(_)));
 }
 
-// RFC 9110 Section 10.1.1: a response sent before the request content has
-// been read closes the connection; content that has arrived, held or not,
-// keeps it reusable.
+// Content that has arrived, held or not, counts as received when the
+// response is sent, so finishing its events lets the connection be reused.
 #[test]
 fn a_held_body_counts_as_received_when_the_response_is_sent() {
     let mut server = Connection::new(Role::Server, Limits::default());
@@ -2109,9 +2112,10 @@ fn request_target_form_depends_on_the_method() {
 }
 
 #[test]
-fn final_response_before_the_request_body_ends_announces_close() {
+fn final_response_before_the_request_body_ends_leaves_reuse_to_the_caller() {
     // RFC 9110 Section 10.1.1: a server that responds before reading the
-    // entire request content should indicate whether it will close.
+    // entire request content says whether it will close or read on; RFC 9112
+    // Section 9.3 lets it read the rest and reuse the connection.
     // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.1
     let mut server = Connection::new(Role::Server, Limits::default());
     server
@@ -2119,19 +2123,136 @@ fn final_response_before_the_request_body_ends_announces_close() {
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
     let bytes = server
-        .send_response(Response {
-            status: StatusCode::from_u16(413).unwrap(),
-            reason: b"Content Too Large".to_vec(),
-            headers: headers([(b"Content-Length", b"0")]),
-            http_version: Version::Http11,
-        })
+        .send_response(response(413, headers([(b"Content-Length", b"0")])))
+        .unwrap();
+    assert_eq!(bytes, b"HTTP/1.1 413 OK\r\nContent-Length: 0\r\n\r\n");
+    server.end_of_message(Headers::new()).unwrap();
+    assert!(server.keep_alive());
+    assert!(server.start_next_cycle().is_err());
+    server.receive_data(b"defghij").unwrap();
+    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
+    server.start_next_cycle().unwrap();
+}
+
+#[test]
+fn final_response_while_content_awaits_100_continue_announces_close() {
+    // RFC 9110 Section 10.1.1: a client told no 100 Continue may never send
+    // the content it held back, so the server cannot read on.
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\nExpect: 100-continue\r\n\r\n",
+        )
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    let bytes = server
+        .send_response(response(417, headers([(b"Content-Length", b"0")])))
+        .unwrap();
+    assert!(bytes.ends_with(b"Connection: close\r\n\r\n"));
+    assert!(!server.keep_alive());
+}
+
+#[test]
+fn early_response_closes_only_when_the_rest_cannot_arrive() {
+    // RFC 9112 Section 9.3: content cut short by the peer's close never
+    // completes, so the response must not promise persistence. Content the
+    // client already started sending despite Expect, or a request that has
+    // ended, leaves reuse open whether or not its events were polled.
+    // Request fields, content, whether the peer then closed, events polled,
+    // and whether the response must close.
+    type Case = (&'static [u8], &'static [u8], bool, usize, bool);
+    let cases: [Case; 5] = [
+        (b"Content-Length: 10\r\n", b"abc", true, 1, true),
+        (b"Transfer-Encoding: chunked\r\n", b"5\r\nab", true, 1, true),
+        (
+            b"Content-Length: 10\r\nExpect: 100-continue\r\n",
+            b"abc",
+            false,
+            1,
+            false,
+        ),
+        (
+            b"Content-Length: 10\r\nExpect: 100-continue\r\n",
+            b"abc",
+            false,
+            2,
+            false,
+        ),
+        (
+            b"Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n",
+            b"0\r\n\r\n",
+            false,
+            2,
+            false,
+        ),
+    ];
+    for (index, (fields, content, peer_closed, events, closes)) in cases.into_iter().enumerate() {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        let mut wire = b"POST / HTTP/1.1\r\nHost: x\r\n".to_vec();
+        wire.extend_from_slice(fields);
+        wire.extend_from_slice(b"\r\n");
+        wire.extend_from_slice(content);
+        server.receive_data(&wire).unwrap();
+        if peer_closed {
+            server.receive_data(b"").unwrap();
+        }
+        for _ in 0..events {
+            event(&mut server);
+        }
+        let bytes = server
+            .send_response(response(413, headers([(b"Content-Length", b"0")])))
+            .unwrap();
+        let announced = bytes.ends_with(b"Connection: close\r\n\r\n");
+        assert_eq!(
+            (announced, !server.keep_alive()),
+            (closes, closes),
+            "case {index}"
+        );
+    }
+}
+
+#[test]
+fn content_where_none_is_allowed_names_the_reason() {
+    let mut client = Connection::new(Role::Client, Limits::default());
+    client.send_request(get(b"/")).unwrap();
+    assert_eq!(
+        client.send_data(b"x").unwrap_err().to_string(),
+        "a request without Content-Length or Transfer-Encoding has no content"
+    );
+
+    for (method, status, expected) in [
+        (
+            &b"HEAD"[..],
+            200,
+            "a response to a HEAD request has no content",
+        ),
+        (b"GET", 204, "a 204 or 304 response has no content"),
+        (b"GET", 304, "a 204 or 304 response has no content"),
+        (b"GET", 205, "a 205 response has no content"),
+    ] {
+        let mut server = Connection::new(Role::Server, Limits::default());
+        let mut wire = method.to_vec();
+        wire.extend_from_slice(b" / HTTP/1.1\r\nHost: x\r\n\r\n");
+        server.receive_data(&wire).unwrap();
+        assert!(matches!(event(&mut server), Event::Request(_)));
+        server
+            .send_response(response(status, Headers::new()))
+            .unwrap();
+        assert_eq!(server.send_data(b"x").unwrap_err().to_string(), expected);
+    }
+
+    let mut server = Connection::new(Role::Server, Limits::default());
+    server
+        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    assert!(matches!(event(&mut server), Event::Request(_)));
+    server
+        .send_response(response(200, headers([(b"Content-Length", b"0")])))
         .unwrap();
     assert_eq!(
-        bytes,
-        b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        server.send_data(b"x").unwrap_err().to_string(),
+        "body exceeds Content-Length"
     );
-    server.end_of_message(Headers::new()).unwrap();
-    assert_eq!(server.local_state(), State::MustClose);
 }
 
 #[test]
@@ -2206,99 +2327,6 @@ fn error_response_after_a_peer_protocol_error_announces_close() {
     );
 }
 
-#[test]
-fn complete_messages_frame_a_known_body_with_content_length() {
-    // RFC 9110 Section 8.6: content of known length gets Content-Length,
-    // except where the status or request method forbids content.
-    // https://www.rfc-editor.org/rfc/rfc9110.html#section-8.6
-    let ok = |headers| Response {
-        status: StatusCode::from_u16(200).unwrap(),
-        reason: b"OK".to_vec(),
-        headers,
-        http_version: Version::Http11,
-    };
-    let post = Request {
-        method: Method::POST,
-        ..get(b"/items")
-    };
-
-    let mut client = Connection::new(Role::Client, Limits::default());
-    assert_eq!(
-        client.send_request_with_body(post.clone(), b"hi").unwrap(),
-        b"POST /items HTTP/1.1\r\nHost: example.test\r\nContent-Length: 2\r\n\r\nhi"
-    );
-    let mut client = Connection::new(Role::Client, Limits::default());
-    assert_eq!(
-        client.send_request_with_body(post, b"").unwrap(),
-        b"POST /items HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n"
-    );
-    let mut client = Connection::new(Role::Client, Limits::default());
-    assert_eq!(
-        client.send_request_with_body(get(b"/"), b"").unwrap(),
-        b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"
-    );
-    assert_eq!(client.local_state(), State::Done);
-
-    let mut server = Connection::new(Role::Server, Limits::default());
-    server
-        .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-        .unwrap();
-    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
-    assert_eq!(
-        server
-            .send_response_with_body(ok(Headers::new()), b"")
-            .unwrap(),
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-    );
-
-    let mut server = Connection::new(Role::Server, Limits::default());
-    server
-        .receive_data(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
-        .unwrap();
-    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
-    assert_eq!(
-        server
-            .send_response_with_body(ok(Headers::new()), b"")
-            .unwrap(),
-        b"HTTP/1.1 200 OK\r\n\r\n"
-    );
-}
-
-#[test]
-fn a_rejected_complete_message_leaves_the_connection_unchanged() {
-    let mut server = Connection::new(Role::Server, Limits::default());
-    server
-        .receive_data(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
-        .unwrap();
-    while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
-    let response = |length: &[u8]| Response {
-        status: StatusCode::from_u16(200).unwrap(),
-        reason: b"OK".to_vec(),
-        headers: headers([(b"Content-Length", length)]),
-        http_version: Version::Http11,
-    };
-
-    // A HEAD response cannot carry content, whatever its Content-Length says.
-    assert!(
-        server
-            .send_response_with_body(response(b"4"), b"body")
-            .is_err()
-    );
-    assert_eq!(server.local_state(), State::SendResponse);
-    assert!(server.keep_alive());
-    assert_eq!(
-        server.send_response_with_body(response(b"4"), b"").unwrap(),
-        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"
-    );
-
-    let mut client = Connection::new(Role::Client, Limits::default());
-    let mut short = get(b"/");
-    short.headers.push("Content-Length", "5");
-    assert!(client.send_request_with_body(short, b"four").is_err());
-    assert_eq!(client.local_state(), State::Idle);
-    assert!(client.send_request_with_body(get(b"/"), b"").is_ok());
-}
-
 fn response(status: u16, headers: Headers) -> Response {
     Response {
         status: StatusCode::from_u16(status).unwrap(),
@@ -2332,10 +2360,11 @@ fn a_response_after_all_request_content_arrived_keeps_the_connection() {
         }
         assert_eq!(
             server
-                .send_response_with_body(response(200, Headers::new()), b"")
+                .send_response(response(200, headers([(b"Content-Length", b"0")])))
                 .unwrap(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
         );
+        server.end_of_message(Headers::new()).unwrap();
         while !matches!(event(&mut server), Event::EndOfMessage(_)) {}
         server.start_next_cycle().unwrap();
     }
@@ -2351,19 +2380,12 @@ fn a_successful_connect_response_completes_at_its_head() {
         .receive_data(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
         .unwrap();
     assert!(matches!(event(&mut server), Event::Request(_)));
-    assert!(
-        server
-            .send_response_with_body(response(200, Headers::new()), b"x")
-            .is_err()
-    );
-    assert_eq!(server.local_state(), State::SendResponse);
     assert_eq!(
-        server
-            .send_response_with_body(response(200, Headers::new()), b"")
-            .unwrap(),
+        server.send_response(response(200, Headers::new())).unwrap(),
         b"HTTP/1.1 200 OK\r\n\r\n"
     );
     assert_eq!(server.local_state(), State::SwitchedProtocol);
+    assert!(server.send_data(b"x").is_err());
 }
 
 #[test]
@@ -2399,13 +2421,9 @@ fn connect_trace_and_reset_content_messages_carry_no_content() {
             );
         }
         let mut client = Connection::new(Role::Client, Limits::default());
-        assert!(
-            client
-                .send_request_with_body(request(method, target, None), b"x")
-                .is_err()
-        );
-        assert_eq!(client.local_state(), State::Idle);
-        client
+        client.send_request(request(method, target, None)).unwrap();
+        assert!(client.send_data(b"x").is_err());
+        Connection::new(Role::Client, Limits::default())
             .send_request(request(method, target, Some((b"Content-Length", b"0"))))
             .unwrap();
     }
@@ -2473,11 +2491,6 @@ fn connect_trace_and_reset_content_messages_carry_no_content() {
             .send_response(response(205, headers([(b"Content-Length", b"3")])))
             .is_err()
     );
-    assert!(
-        server()
-            .send_response_with_body(response(205, Headers::new()), b"x")
-            .is_err()
-    );
 }
 
 #[test]
@@ -2513,15 +2526,17 @@ fn a_response_that_ends_keep_alive_says_so_on_the_wire() {
     event(&mut server);
     event(&mut server);
     server
-        .send_response_with_body(response(200, Headers::new()), b"")
+        .send_response(response(200, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
     assert_eq!(
         server
-            .send_response_with_body(response(408, Headers::new()), b"")
+            .send_response(response(408, headers([(b"Content-Length", b"0")])))
             .unwrap(),
         b"HTTP/1.1 408 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
+    server.end_of_message(Headers::new()).unwrap();
     assert_eq!(server.local_state(), State::MustClose);
 }
 
@@ -2538,8 +2553,9 @@ fn empty_lines_before_eof_are_a_clean_close() {
     event(&mut server);
     assert!(matches!(event(&mut server), Event::EndOfMessage(_)));
     server
-        .send_response_with_body(response(200, Headers::new()), b"")
+        .send_response(response(200, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
     server.receive_data(b"").unwrap();
     assert!(matches!(event(&mut server), Event::ConnectionClosed));
@@ -2933,16 +2949,9 @@ fn a_request_after_an_early_server_response_is_rejected() {
     // connection, but that response does not answer a later request.
     let mut server = Connection::new(Role::Server, Limits::default());
     server
-        .send_response_with_body(
-            Response {
-                status: StatusCode::from_u16(400).unwrap(),
-                reason: Vec::new(),
-                headers: Headers::new(),
-                http_version: Version::Http11,
-            },
-            b"",
-        )
+        .send_response(response(400, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     server
         .receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         .unwrap();

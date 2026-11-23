@@ -5,8 +5,11 @@ from compare_h11 import (
     API_GET,
     API_RESPONSE,
     LARGE_BODY_SIZE,
+    PIPELINE_DEPTH,
+    PLAINTEXT_RESPONSE,
     SCENARIOS,
     CandidateDownload,
+    CandidatePipeline,
     CandidateRoundTrip,
     CandidateServerCycle,
 )
@@ -32,3 +35,9 @@ def test_download(benchmark):
     wire = benchmark(CandidateDownload())
 
     assert sum(map(len, wire)) > LARGE_BODY_SIZE
+
+
+def test_pipelined_plaintext(benchmark):
+    wire = benchmark(CandidatePipeline())
+
+    assert wire == [PLAINTEXT_RESPONSE] * PIPELINE_DEPTH

@@ -67,11 +67,13 @@ pub struct Connection {
 }
 
 /// State scoped to one request/response cycle, reset by `start_next_cycle`.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct Cycle {
     progress: SectionProgress,
     reader: Reader,
     writer: Option<Framing>,
+    /// Why the local message has no content when no `Content-Length` says so.
+    no_content: Option<&'static str>,
     chunk_extension_bytes: usize,
     request_kind: Option<RequestKind>,
     upgrade_proposals: Vec<Vec<u8>>,
@@ -98,6 +100,9 @@ impl Connection {
 
     /// Accepts response heads that break HTTP syntax in ways mainstream
     /// clients tolerate, where doing so cannot change message framing.
+    ///
+    /// Only a [`Role::Client`] connection parses responses, so this has no
+    /// effect on a server connection.
     ///
     /// By default the connection is as strict as RFC 9110 and RFC 9112
     /// allow. A lenient connection additionally, for received responses

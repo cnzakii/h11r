@@ -7,7 +7,7 @@ site_url = "https://h11r.readthedocs.io/"
 copyright = "Copyright &copy; 2026 h11r contributors"
 extra_css = ["stylesheets/extra.css"]
 
-# Only docs/site is published. docs/knowledge remains an engineering reference.
+# Only docs/site is published.
 docs_dir = "docs/site"
 site_dir = "site"
 

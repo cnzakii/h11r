@@ -116,19 +116,7 @@ events consume them, so an adapter needs no body accounting of its own.
 Every sending method returns bytes for the transport. The `write_all()`
 placeholder below must preserve the entire value and its order.
 
-When the whole body is already in memory, pass it as `body=`. One call returns
-the head, body, and end of the message, and adds `Content-Length` when no
-framing field is present and the message may carry content:
-
-```python
-write_all(connection.send_response(200, [("Content-Type", "text/plain")], body=body))
-```
-
-If the body does not fit the framing, for example a body for a `HEAD` response
-or a mismatched `Content-Length`, `LocalProtocolError` is raised and the
-connection is unchanged.
-
-To stream a body instead, send the head, each piece, and the end separately:
+Send the head, each piece of the body, and the end separately:
 
 ```python
 write_all(

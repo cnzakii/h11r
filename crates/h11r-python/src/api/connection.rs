@@ -47,12 +47,13 @@ use std::collections::VecDeque;
 ///         parsed.
 ///
 /// By default the connection is as strict as RFC 9110 and RFC 9112 allow.
-/// `lenient=True` additionally accepts received response heads that break
-/// HTTP syntax in ways mainstream clients tolerate: invalid field lines are
-/// dropped, and whitespace before a field's colon or between status-line
-/// elements is accepted. A connection that drops a field line is not reused,
-/// since the line may have framed the message. Requests are never parsed
-/// leniently.
+/// `lenient=True` changes only how a `Role.CLIENT` connection parses the
+/// response heads it receives; a server connection behaves the same either
+/// way, because requests are never parsed leniently. A lenient client accepts
+/// what mainstream clients tolerate: invalid field lines are dropped, and
+/// whitespace before a field's colon or between status-line elements is
+/// accepted. A connection that drops a field line is not reused, since the
+/// line may have framed the message.
 ///
 /// Raises:
 ///     ValueError: If any inbound limit is zero.
@@ -91,7 +92,8 @@ impl PyConnection {
     /// Append bytes received from the peer; empty bytes mark EOF.
     ///
     /// A `bytes` object that falls wholly within a message body is not
-    /// copied: it becomes the `data` of its own `Data` event.
+    /// copied: it becomes the `data` of its own `Data` event. Other buffers
+    /// are copied once into such a `bytes` object.
     ///
     /// Args:
     ///     data (bytes | bytearray | memoryview): Bytes read from the transport.
@@ -100,14 +102,14 @@ impl PyConnection {
     ///     TypeError: If `data` does not implement the buffer protocol.
     ///     LocalProtocolError: If non-empty data follows EOF.
     fn receive_data(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        // Exact `bytes` only: a subclass could change what consumers observe.
-        if let Ok(bytes) = data.cast_exact::<PyBytes>()
-            && self.0.hold_body_data(bytes.as_bytes().len())
-        {
-            self.1.push_back(bytes.clone().unbind());
+        // Exact `bytes` only: a subclass or a mutable buffer could change what
+        // consumers observe, so those are copied once first.
+        let bytes = owned_bytes(data)?;
+        if self.0.hold_body_data(bytes.as_bytes().len()) {
+            self.1.push_back(bytes.unbind());
             return Ok(());
         }
-        with_buffer(data, |data| self.0.receive_data(data))?.map_err(local_error)
+        self.0.receive_data(bytes.as_bytes()).map_err(local_error)
     }
 
     /// Return the next peer event or a receive status.
@@ -153,12 +155,6 @@ impl PyConnection {
     ///         See RFC 9112 Section 3.2.
     ///     headers (Iterable): `(name, value)` pairs. Each item accepts ASCII
     ///         `str`, `bytes`, `bytearray`, or `memoryview`.
-    ///     body (bytes | bytearray | memoryview | None): The complete request
-    ///         content. When given, the returned bytes also contain the body
-    ///         and the end of the message, and `Content-Length` is added if no
-    ///         framing field is present and the body is non-empty or the
-    ///         method is `POST`, `PUT`, or `PATCH`. Omit it to stream
-    ///         the body with `send_data()` and `end_of_message()`.
     ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
     ///         (default) or `b"1.0"`.
     ///
@@ -172,14 +168,13 @@ impl PyConnection {
     ///         version is unsupported.
     ///     LocalProtocolError: If the head, body framing, or current state is
     ///         invalid. The connection is unchanged after this error.
-    #[pyo3(signature = (method, target, headers, *, body = None, http_version = None))]
+    #[pyo3(signature = (method, target, headers, *, http_version = None))]
     fn send_request(
         &mut self,
         py: Python<'_>,
         method: &Bound<'_, PyAny>,
         target: &Bound<'_, PyAny>,
         headers: &Bound<'_, PyAny>,
-        body: Option<&Bound<'_, PyAny>>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
         let request = core::Request {
@@ -188,16 +183,10 @@ impl PyConnection {
             headers: extract_headers(Some(headers))?,
             http_version: extract_version(http_version)?,
         };
-        match body {
-            None => self
-                .0
-                .send_request(request)
-                .map(|bytes| PyBytes::new(py, &bytes).unbind())
-                .map_err(local_error),
-            Some(body) => framed(py, body, |length| {
-                self.0.send_request_with_body_framing(request, length)
-            }),
-        }
+        self.0
+            .send_request(request)
+            .map(|bytes| PyBytes::new(py, &bytes).unbind())
+            .map_err(local_error)
     }
 
     /// Serialize an informational response head.
@@ -240,18 +229,12 @@ impl PyConnection {
             .map_err(local_error)
     }
 
-    /// Serialize a final response head, or a complete response with `body`.
+    /// Serialize a final response head.
     ///
     /// Args:
     ///     status_code (int): A status in the range 200 through 599.
     ///     headers (Iterable | None): Optional `(name, value)` pairs. Each item
     ///         accepts ASCII `str`, `bytes`, `bytearray`, or `memoryview`.
-    ///     body (bytes | bytearray | memoryview | None): The complete response
-    ///         content. When given, the returned bytes also contain the body
-    ///         and the end of the message, and `Content-Length` is added if no
-    ///         framing field is present and the response may carry content.
-    ///         Omit it to stream the body with `send_data()` and
-    ///         `end_of_message()`.
     ///     reason (str | bytes | bytearray | memoryview | None): Optional ASCII
     ///         reason phrase.
     ///     http_version (str | bytes | bytearray | memoryview | None): `b"1.1"`
@@ -266,13 +249,12 @@ impl PyConnection {
     ///     ValueError: If the status, text, or HTTP version is invalid.
     ///     LocalProtocolError: If the response, body framing, or current state
     ///         is invalid. The connection is unchanged after this error.
-    #[pyo3(signature = (status_code, headers = None, *, body = None, reason = None, http_version = None))]
+    #[pyo3(signature = (status_code, headers = None, *, reason = None, http_version = None))]
     fn send_response(
         &mut self,
         py: Python<'_>,
         status_code: &Bound<'_, PyAny>,
         headers: Option<&Bound<'_, PyAny>>,
-        body: Option<&Bound<'_, PyAny>>,
         reason: Option<&Bound<'_, PyAny>>,
         http_version: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
@@ -282,16 +264,10 @@ impl PyConnection {
             headers: extract_headers(headers)?,
             http_version: extract_version(http_version)?,
         };
-        match body {
-            None => self
-                .0
-                .send_response(response)
-                .map(|bytes| PyBytes::new(py, &bytes).unbind())
-                .map_err(local_error),
-            Some(body) => framed(py, body, |length| {
-                self.0.send_response_with_body_framing(response, length)
-            }),
-        }
+        self.0
+            .send_response(response)
+            .map(|bytes| PyBytes::new(py, &bytes).unbind())
+            .map_err(local_error)
     }
 
     /// Serialize body data into one bytes object.

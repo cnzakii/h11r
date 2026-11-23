@@ -1,7 +1,6 @@
 //! Reading bytes from Python buffers and text.
 
 use super::*;
-use pyo3::buffer::PyUntypedBuffer;
 use pyo3::exceptions::{PyAttributeError, PyTypeError, PyValueError};
 use pyo3::types::{PyAny, PyBytes, PyMemoryView, PyString};
 
@@ -16,14 +15,19 @@ pub(super) fn with_buffer<R>(
     if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(consume(bytes.as_bytes()));
     }
-    let buffer = PyUntypedBuffer::get(value)?;
-    if let Ok(buffer) = buffer.as_typed::<u8>() {
-        return Ok(consume(&buffer.to_vec(value.py())?));
+    Ok(consume(owned_bytes(value)?.as_bytes()))
+}
+
+/// Returns `value` itself when it is exactly `bytes`, and otherwise copies the
+/// buffer once into a new `bytes`, which nothing else can then mutate.
+pub(super) fn owned_bytes<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+    if let Ok(bytes) = value.cast_exact::<PyBytes>() {
+        return Ok(bytes.clone());
     }
-    drop(buffer);
+    // `tobytes()` copies straight into new storage; `PyBytes::new_with` would
+    // zero the storage first, an extra pass over large bodies.
     let view = PyMemoryView::from(value)?;
-    let bytes = view.call_method0("tobytes")?.cast_into::<PyBytes>()?;
-    Ok(consume(bytes.as_bytes()))
+    Ok(view.call_method0("tobytes")?.cast_into::<PyBytes>()?)
 }
 
 pub(super) fn contiguous_buffer_len(value: &Bound<'_, PyAny>) -> PyResult<usize> {

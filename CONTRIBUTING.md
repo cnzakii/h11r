@@ -113,14 +113,122 @@ Mixed changes run both. Branch protection requires only the final
 `Required checks` job; individual matrix jobs may be skipped when they are not
 affected by a pull request.
 
+## Code Conventions
+
+### Protocol Decisions
+
+Decide protocol behavior from the current specifications: RFC 9110 for
+semantics and RFC 9112 for messaging, with their formal updates (such as
+RFC 9931) and errata, and the IANA registries for names and codepoints.
+Implementations are evidence about interoperability, never authority.
+
+- Where following an RFC strictly does not hurt interoperability, follow it.
+- Where it does, add a documented compatibility rule or an option.
+- Where an RFC leaves behavior open or optional, follow mainstream
+  implementations. Compare hyper, Go `net/http`, llhttp (Node.js), and
+  actix-http, with h11 as one data point, not the reference.
+- Where those implementations disagree, add a parameter; where they nearly
+  all agree and the RFC is firm, follow them without one.
+- The default stays exactly as strict as the RFCs, never stricter. Lenient
+  behavior relaxes only what mainstream implementations tolerate without
+  changing message framing, and is documented.
+- A difference caused by httparse that h11r cannot align is documented as
+  a known deviation rather than worked around. A difference caused by
+  h11r's own code is fixed there.
+
+Cite the RFC section beside the code or test that implements a rule, and name
+the implementations compared in the pull request.
+
+### Boundaries
+
+- Protocol state and framing live in the Rust core, which does not depend on
+  PyO3 or perform I/O. The Python layer converts inputs, outputs, and errors
+  into natural Python and adds no protocol rules of its own.
+- Validate once, where data enters: arguments of public methods and bytes
+  received from the peer. Inside, trust validated values; do not add checks
+  that restate types.
+- Offer one way to do each thing. Before 1.0, replace an incorrect design
+  directly, without aliases, shims, or compatibility layers.
+- Prefer the standard library and existing dependencies. Add a dependency
+  only for a current need.
+- Avoid copies and repeated conversions on per-message and per-byte paths,
+  and measure a change that claims to.
+
+### Naming and Errors
+
+- Public names follow each language's conventions and describe HTTP
+  behavior, not implementation mechanics.
+- `LocalProtocolError` means the caller asked for something the current state
+  or framing forbids; `RemoteProtocolError` means the peer sent invalid input.
+  A message names the rule that was broken, so the caller can act on it.
+- A rejected call leaves the connection unchanged.
+
+### Style
+
+- `make lint` runs rustfmt, Clippy, Ruff, and ty; their output is the style.
+- Comments state what the code does, or why when the code cannot show it.
+  They do not discuss alternatives or history. Docstrings state the contract:
+  what a method returns, raises, and requires.
+
+## Tests
+
+A test states one claim about a contract and fails when that claim breaks.
+
+### What to Test
+
+- Start from a contract h11r owns: a public docstring, an RFC requirement,
+  a state transition, or an error the caller can act on.
+- Name the plausible wrong implementation the test would catch. If no
+  realistic bug fails it, do not write it; do not test constants, types, or
+  spelling.
+- Take edge cases from the input domain and the defined states: length and
+  limit boundaries, every lifecycle state, arbitrary transport segmentation,
+  and messages that real peers send.
+- Match the evidence to the claim: focused tests for behavior, interoperability
+  tests for real peers, fuzzing for hostile input and state exploration, and
+  benchmarks for performance.
+
+### Tests Never Justify Defensive Code
+
+Do not add guards or fallback branches to the implementation so that a test
+can pass with an input the contract excludes.
+
+### How to Write a Test
+
+- Name the test as its claim, such as
+  `a_held_body_counts_as_received_when_the_response_is_sent`.
+- Assert the whole observable result with equality where possible, such as
+  the complete wire bytes of a message.
+- Put a test where its claim comes from:
+  - `crates/h11r/tests/conformance.rs` for an RFC requirement, with a
+    comment citing the section;
+  - `crates/h11r/tests/protocol.rs` for engine behavior;
+  - `crates/h11r-python/tests` for the Python API and its conversions;
+  - `crates/h11r-python/tests/test_interop.py` for exchanges with h11 and the
+    standard library;
+  - `fuzz` for parsing and state exploration.
+- Feed received bytes both whole and one byte at a time when framing is
+  involved; transport boundaries carry no protocol meaning.
+- For a contract whose failure is costly, such as framing or reuse, break the
+  code once by hand and confirm that a test fails.
+
 ## Performance Changes
 
-Build the Python extension in release mode before running Python benchmarks:
+Benchmark scenarios follow established suites rather than ad hoc workloads:
+TechEmpower's Plaintext test for pipelining, hyper's end-to-end benchmarks for
+body sizes, and gRPC's latency benchmark for the median and tail of one
+exchange in flight. Name the suite a new scenario follows.
+
+Sync the environment first, then build the extension in release mode and run
+without syncing again, so the release build is the one measured:
 
 ```console
-uv --directory crates/h11r-python run --locked maturin develop --release
-uv run --locked --group benchmark python \
-  crates/h11r-python/benchmarks/compare_h11.py
+uv sync --locked --group benchmark
+uv --directory crates/h11r-python run --no-sync maturin develop --release
+uv run --no-sync python crates/h11r-python/benchmarks/compare_h11.py \
+  -o docs/assets/python-benchmark.json
+uv run --no-sync python crates/h11r-python/benchmarks/latency_memory.py \
+  --output docs/assets/python-latency-memory.json
 ```
 
 [CodSpeed](https://codspeed.io/) runs the h11r side of the same workloads on
@@ -136,8 +244,7 @@ The receive-buffer benchmark isolates one 64 KiB `receive_data()` call and its
 save the full pyperf result:
 
 ```console
-uv run --locked --group benchmark python \
-  crates/h11r-python/benchmarks/receive_buffer.py \
+uv run --no-sync python crates/h11r-python/benchmarks/receive_buffer.py \
   --output /tmp/h11r-receive.json
 ```
 
@@ -148,26 +255,30 @@ from each checkout, then let pyperf report the means and percentage changes:
 ```console
 # Run these commands in the main checkout.
 UV_PYTHON=3.13 uv sync --locked --group benchmark
-UV_PYTHON=3.13 uv --directory crates/h11r-python run --locked \
+UV_PYTHON=3.13 uv --directory crates/h11r-python run --no-sync \
   maturin develop --release
-UV_PYTHON=3.13 uv run --locked --group benchmark python \
+UV_PYTHON=3.13 uv run --no-sync python \
   crates/h11r-python/benchmarks/receive_buffer.py \
   --output /tmp/h11r-receive-main.json
 
 # Run the same sync, build, and benchmark commands in the change checkout, using
 # /tmp/h11r-receive-change.json as the output, then compare the saved results.
-UV_PYTHON=3.13 uv run --locked --group benchmark python -m pyperf compare_to \
+UV_PYTHON=3.13 uv run --no-sync python -m pyperf compare_to \
   /tmp/h11r-receive-main.json /tmp/h11r-receive-change.json
 ```
 
 Set `UV_PYTHON=3.14t` instead in every command to repeat the comparison on
 free-threaded CPython. Do not commit ad hoc pyperf comparison files. The
-canonical `docs/assets/python-benchmark.json` is the only checked-in result;
-remove `hostname` and `python_executable` metadata before committing it, then
-run `make docs-benchmark` to regenerate its chart, its table, and the README
-performance section from it.
+canonical `docs/assets/python-benchmark.json` and
+`docs/assets/python-latency-memory.json` are the only checked-in results;
+remove `hostname` and `python_executable` metadata from the pyperf result
+before committing it, then run `make docs-benchmark` to regenerate the tables
+and the README performance section from them. Results are published as
+tables, not charts.
 
-Report the workload, environment, versions, and before-and-after results. A
+Run benchmarks on an otherwise idle machine; tail latency in particular moves
+with any other load. Report the workload, environment, versions, and
+before-and-after results. A
 faster result must preserve equivalent protocol behavior.
 
 ## Commits
@@ -185,6 +296,7 @@ not required.
 A pull request should:
 
 - explain the problem and the chosen solution;
+- cite the RFC sections and implementations behind a protocol change;
 - link the relevant issue when one exists;
 - describe user-visible or compatibility effects;
 - include the required tests and documentation;

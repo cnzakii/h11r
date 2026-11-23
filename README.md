@@ -54,13 +54,16 @@ client = h11r.Connection(h11r.Role.CLIENT)
 server = h11r.Connection(h11r.Role.SERVER)
 
 server.receive_data(
-    client.send_request("GET", "/hello", [("Host", "example.test")], body=b"")
+    client.send_request("GET", "/hello", [("Host", "example.test")])
+    + client.end_of_message()
 )
 print(server.next_event())
 print(server.next_event())
 
 client.receive_data(
-    server.send_response(200, [("Content-Type", "text/plain")], body=b"Hello!\n")
+    server.send_response(200, [("Content-Type", "text/plain"), ("Content-Length", "7")])
+    + server.send_data(b"Hello!\n")
+    + server.end_of_message()
 )
 while not isinstance(event := client.next_event(), h11r.EndOfMessage):
     print(event)
@@ -75,8 +78,10 @@ Data(data=b'Hello!\n', chunk_start=False, chunk_end=False)
 True
 ```
 
-`body=` sends a complete message and adds `Content-Length`. To stream a body
-instead, call `send_data()` for each piece and `end_of_message()` at the end.
+Each message is a head, any number of `send_data()` calls, and
+`end_of_message()`. A request with content declares `Content-Length` or
+`Transfer-Encoding: chunked`; an HTTP/1.1 response without either is sent
+chunked.
 
 ## Installation
 
@@ -133,30 +138,45 @@ Each scenario runs complete exchanges through the public APIs of `h11r` and
 calling a JSON API, and the server answers with typical response fields and a
 JSON body. Two scenarios move a 1 MiB body in 64 KiB transport reads or
 writes, one in each direction, using each library's way of passing body
-objects through without copying them. Connections are reused, so the timer
-covers parsing, framing, state transitions, event construction, and
-serialization.
+objects through without copying them. The Plaintext scenario follows
+TechEmpower's: 16 pipelined requests arrive in one read. Connections are
+reused, so the timer covers parsing, framing, state transitions, event
+construction, and serialization.
+
+The second table follows gRPC's latency benchmark: one round trip in flight,
+each timed on its own with the garbage collector enabled, reporting the median
+and the 99th percentile. Memory is the resident size a server holds per
+keep-alive connection between requests.
 
 <!-- benchmark-table:start -->
 | Scenario | h11r (µs/op) | h11 (µs/op) | Relative throughput |
 | --- | ---: | ---: | ---: |
-| API GET · 10 fields | 1.21 | 27.03 | 22.4× |
-| JSON POST · 1 KiB | 1.44 | 30.63 | 21.3× |
-| Fragmented GET · 16 B reads | 3.27 | 46.23 | 14.1× |
-| Chunked upload · 64 KiB | 6.49 | 83.97 | 12.9× |
-| Upload · 1 MiB in 64 KiB reads | 3.96 | 127.04 | 32.1× |
-| Download · 1 MiB in 64 KiB writes | 1.81 | 42.06 | 23.3× |
-| Client/server round trip | 2.11 | 53.43 | 25.4× |
+| API GET · 10 fields | 1.28 | 28.51 | 22.4× |
+| JSON POST · 1 KiB | 1.47 | 32.12 | 21.8× |
+| Fragmented GET · 16 B reads | 3.32 | 47.24 | 14.2× |
+| Chunked upload · 64 KiB | 6.72 | 86.94 | 12.9× |
+| Upload · 1 MiB in 64 KiB reads | 4.19 | 131.77 | 31.5× |
+| Download · 1 MiB in 64 KiB writes | 1.86 | 42.62 | 22.9× |
+| TechEmpower Plaintext · 16 pipelined | 10.64 | 293.50 | 27.6× |
+| Client/server round trip | 2.13 | 54.13 | 25.4× |
 
-_Environment: h11r 0.3.1 · h11 0.16.0 · CPython 3.13.12 (64-bit) · Apple M4 · macOS-27.2-arm64-arm-64bit-Mach-O · 2026-11-01_
+_Environment: h11r 0.3.1 · h11 0.16.0 · CPython 3.13.12 (64-bit) · Apple M4 · macOS-27.2.1-arm64-arm-64bit-Mach-O · 2026-11-22_
+
+| Measurement | h11r | h11 | h11 ÷ h11r |
+| --- | ---: | ---: | ---: |
+| Round-trip latency · P50 | 2.17 µs | 53.17 µs | 24.5× |
+| Round-trip latency · P99 | 2.58 µs | 63.08 µs | 24.4× |
+| Memory per idle connection | 0.78 KiB | 0.94 KiB | 1.2× |
+
+_Environment: h11r 0.3.1 · h11 0.16.0 · CPython 3.13.12 · Apple M4 · macOS-27.2.1-arm64-arm-64bit-Mach-O · 2026-11-22_
 <!-- benchmark-table:end -->
 
 These are protocol-layer measurements. They exclude sockets, TLS, event-loop
 scheduling, and application work, so end-to-end gains depend on how much of
 your program's time HTTP/1.1 processing takes.
 
-Inspect the [benchmark source][benchmark-script], [raw result][benchmark-results],
-and [chart][benchmark-chart], or follow the
+Inspect the [benchmark source][benchmark-script] and [raw result][benchmark-results],
+or follow the
 [reproduction steps](https://github.com/cnzakii/h11r/blob/main/CONTRIBUTING.md#performance-changes).
 
 ## Contributing
@@ -168,7 +188,6 @@ guidance.
 
 MIT
 
-[benchmark-chart]: https://raw.githubusercontent.com/cnzakii/h11r/main/docs/assets/python-benchmark.svg
 [benchmark-results]: https://github.com/cnzakii/h11r/blob/main/docs/assets/python-benchmark.json
 [benchmark-script]: https://github.com/cnzakii/h11r/blob/main/crates/h11r-python/benchmarks/compare_h11.py
 [first-client-guide]: https://h11r.readthedocs.io/en/stable/getting-started/
