@@ -30,21 +30,23 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # CodSpeed's tracing needs the setup-python interpreter, not a uv-managed one.
       - id: python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@v10.3.3
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
       - run: uv sync --locked --group benchmark
         env:
           UV_PYTHON: ${{ steps.python.outputs.python-path }}
       - run: uv --directory crates/h11r-python run --no-sync maturin develop --release
-      - uses: CodSpeedHQ/action@v5.6.0
+      - uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062 # v5.6.0
         with:
           mode: simulation
           run: uv run --no-sync pytest crates/h11r-python/benchmarks/test_codspeed.py --codspeed

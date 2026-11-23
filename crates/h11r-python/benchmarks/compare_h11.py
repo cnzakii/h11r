@@ -97,6 +97,31 @@ DOWNLOAD_HEADERS = (
     *API_RESPONSE_HEADERS[2:],
 )
 
+# TechEmpower Plaintext: wrk pipelines 16 GETs carrying only these fields, and
+# the server answers each with "Hello, World!" plus Server and Date.
+# https://github.com/TechEmpower/FrameworkBenchmarks/blob/master/toolset/wrk/pipeline.sh
+PIPELINE_DEPTH = 16
+PLAINTEXT_GET = head(
+    b"GET /plaintext HTTP/1.1",
+    (
+        (b"Host", b"tfb-server:8080"),
+        (
+            b"Accept",
+            b"text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,"
+            b"application/xml;q=0.8,*/*;q=0.7",
+        ),
+        (b"Connection", b"keep-alive"),
+    ),
+)
+PLAINTEXT_BODY = b"Hello, World!"
+PLAINTEXT_HEADERS = (
+    (b"Content-Type", b"text/plain"),
+    (b"Content-Length", b"%d" % len(PLAINTEXT_BODY)),
+    (b"Server", b"example"),
+    (b"Date", b"Wed, 29 Oct 2026 12:00:00 GMT"),
+)
+PLAINTEXT_RESPONSE = head(b"HTTP/1.1 200 OK", PLAINTEXT_HEADERS) + PLAINTEXT_BODY
+
 SCENARIOS = (
     ("api_get", (API_GET,)),
     ("json_post_1k", (JSON_POST,)),
@@ -229,6 +254,58 @@ class H11Download:
         return wire
 
 
+class CandidatePipeline:
+    """Answers 16 pipelined Plaintext requests that arrive in one read."""
+
+    __slots__ = ("connection",)
+
+    def __init__(self) -> None:
+        self.connection = candidate.Connection(candidate.Role.SERVER)
+
+    def __call__(self) -> list[bytes]:
+        connection = self.connection
+        connection.receive_data(PLAINTEXT_GET * PIPELINE_DEPTH)
+        wire = []
+        for _ in range(PIPELINE_DEPTH):
+            connection.next_event()
+            connection.next_event()
+            wire.append(
+                connection.send_response(200, PLAINTEXT_HEADERS, reason=b"OK")
+                + connection.send_data(PLAINTEXT_BODY)
+                + connection.end_of_message()
+            )
+            connection.start_next_cycle()
+        return wire
+
+
+class H11Pipeline:
+    """Answers 16 pipelined Plaintext requests that arrive in one read."""
+
+    __slots__ = ("connection",)
+
+    def __init__(self) -> None:
+        self.connection = reference.Connection(reference.SERVER)
+
+    def __call__(self) -> list[bytes]:
+        connection = self.connection
+        connection.receive_data(PLAINTEXT_GET * PIPELINE_DEPTH)
+        wire = []
+        for _ in range(PIPELINE_DEPTH):
+            connection.next_event()
+            connection.next_event()
+            wire.append(
+                connection.send(
+                    reference.Response(
+                        status_code=200, headers=PLAINTEXT_HEADERS, reason=b"OK"
+                    )
+                )
+                + connection.send(reference.Data(data=PLAINTEXT_BODY))
+                + connection.send(reference.EndOfMessage())
+            )
+            connection.start_next_cycle()
+        return wire
+
+
 class CandidateRoundTrip:
     __slots__ = ("client", "server")
 
@@ -329,6 +406,10 @@ def check_workloads() -> None:
         for _ in range(2):
             assert b"".join(workload()) == download
 
+    for workload in (CandidatePipeline(), H11Pipeline()):
+        for _ in range(2):
+            assert workload() == [PLAINTEXT_RESPONSE] * PIPELINE_DEPTH
+
     for workload in (CandidateRoundTrip(), H11RoundTrip()):
         for _ in range(2):
             request, response, request_end, response_end = workload()
@@ -371,6 +452,7 @@ def main() -> None:
     )
     choices = [name for name, _ in SCENARIOS] + [
         "download_1m",
+        "plaintext_pipelined_16",
         "client_server_round_trip",
     ]
     runner.argparser.add_argument("--scenario", choices=choices)
@@ -388,6 +470,15 @@ def main() -> None:
             runner.bench_func("scenario/download_1m/h11r", CandidateDownload())
         if args.implementation in (None, "h11"):
             runner.bench_func("scenario/download_1m/h11-0.16.0", H11Download())
+    if args.scenario in (None, "plaintext_pipelined_16"):
+        if args.implementation in (None, "h11r"):
+            runner.bench_func(
+                "scenario/plaintext_pipelined_16/h11r", CandidatePipeline()
+            )
+        if args.implementation in (None, "h11"):
+            runner.bench_func(
+                "scenario/plaintext_pipelined_16/h11-0.16.0", H11Pipeline()
+            )
     if args.scenario in (None, "client_server_round_trip"):
         if args.implementation in (None, "h11r"):
             runner.bench_func(

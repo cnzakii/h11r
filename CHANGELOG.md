@@ -4,6 +4,38 @@ User-visible changes to h11r are recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- A final response sent before the request content has been read no longer
+  forces `Connection: close`. The caller decides: read the rest of the content
+  and reuse the connection, as `start_next_cycle()` still requires, or send
+  `Connection: close` itself. Closure is forced only when the rest of the
+  content cannot arrive: the peer has already closed, or the client is still
+  waiting for `100 Continue` and has sent none. A 408 response always carries
+  `Connection: close` (RFC 9110 Section 15.5.9).
+- Sending content where none is allowed names the reason instead of reporting
+  `body exceeds Content-Length`: a request without `Content-Length` or
+  `Transfer-Encoding`, a response to `HEAD`, or a 204, 205, or 304 response.
+- The `lenient` documentation states that it affects only client connections.
+- Python: `receive_data()` copies a `memoryview`, `bytearray`, or other
+  buffer once into a `bytes` object and treats it like received `bytes`,
+  instead of copying it into the parser and again into the `Data` event. A
+  64 KiB body read from a reused receive buffer takes about a third of the
+  time it did.
+
+### Removed
+
+- `send_request(body=...)` and `send_response(body=...)` (Rust:
+  `send_request_with_body` and `send_response_with_body`). Send the head, then
+  `send_data()` and `end_of_message()`, with an explicit `Content-Length` where
+  wanted; this was a second way to send a body that also added
+  `Content-Length` implicitly.
+
+### Added
+
+- Python: `Role`, `State`, and `ReceiveStatus` members have a `name`, such as
+  `State.DONE.name == "DONE"`.
+
 ## [0.3.1] - 2026-11-01
 
 ### Changed

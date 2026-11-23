@@ -117,8 +117,15 @@ for the current state or framing.
 `RemoteProtocolError` means peer input violated HTTP syntax, framing, state, or
 an inbound limit. A server can still send one final response, using
 `suggested_status_code` when it is not `None`, and should then close the
-transport. `h11r` marks that response with `Connection: close`, as it does any
-response sent before the request body has been fully received.
+transport. `h11r` marks that response with `Connection: close`.
+
+A response may also start before the request body has been fully received. The
+caller then chooses: read the rest of the body and reuse the connection, or
+send `Connection: close` and close the transport after the response.
+`start_next_cycle()` refuses reuse until the body has been read. `h11r` forces
+`Connection: close` only when the rest of the body cannot arrive: the peer has
+already closed, or the client is still waiting for `100 Continue` and has sent
+none. Any 408 response also closes.
 
 Each connection applies independent inbound limits:
 

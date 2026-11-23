@@ -187,10 +187,16 @@ fn bare_cr_is_rejected_from_peer_elements() {
 #[test]
 fn body_crlf_is_counted_and_no_extra_crlf_is_sent() {
     let mut client = Connection::new(Role::Client, Limits::default());
+    let mut wire = client
+        .send_request(request(
+            Method::POST,
+            headers([(b"Host", b"x"), (b"Content-Length", b"3")]),
+        ))
+        .unwrap();
+    wire.extend(client.send_data(b"x\r\n").unwrap());
+    wire.extend(client.end_of_message(Headers::new()).unwrap());
     assert_eq!(
-        client
-            .send_request_with_body(request(Method::POST, headers([(b"Host", b"x")])), b"x\r\n")
-            .unwrap(),
+        wire,
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nx\r\n"
     );
 }
@@ -251,14 +257,12 @@ fn methods_are_case_sensitive_tokens() {
     for name in [b"head".as_slice(), b"connect", b"X!#$%&'*+-.^_`|~"] {
         let mut client = Connection::new(Role::Client, Limits::default());
         let wire = client
-            .send_request_with_body(
-                request(
-                    Method::from_bytes(name).unwrap(),
-                    headers([(b"Host", b"x")]),
-                ),
-                b"",
-            )
+            .send_request(request(
+                Method::from_bytes(name).unwrap(),
+                headers([(b"Host", b"x")]),
+            ))
             .unwrap();
+        client.end_of_message(Headers::new()).unwrap();
         for size in [1, wire.len()] {
             assert_eq!(
                 feed(&mut peer(Role::Server), &wire, size).unwrap().requests[0]
@@ -802,8 +806,9 @@ fn incomplete_request_can_receive_error_response() {
     server.receive_data(b"").unwrap();
     assert!(server.next_event().is_err());
     let wire = server
-        .send_response_with_body(response(400, Headers::new()), b"")
+        .send_response(response(400, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     assert!(
         wire.windows(b"Connection: close".len())
             .any(|w| w == b"Connection: close")
@@ -888,8 +893,12 @@ fn close_stops_a_server_pipeline() {
             let mut server = peer(Role::Server);
             assert_eq!(feed(&mut server, &wire, size).unwrap().requests.len(), 1);
             server
-                .send_response_with_body(response(200, headers([(b"Connection", b"close")])), b"")
+                .send_response(response(
+                    200,
+                    headers([(b"Connection", b"close"), (b"Content-Length", b"0")]),
+                ))
                 .unwrap();
+            server.end_of_message(Headers::new()).unwrap();
             assert!(!server.keep_alive());
             assert!(server.start_next_cycle().is_err());
             assert_eq!(server.next_event().unwrap(), NextEvent::Paused);
@@ -1208,9 +1217,10 @@ fn upgrade_selection_and_decline() {
     client.end_of_message(Headers::new()).unwrap();
     let mut server = peer(Role::Server);
     feed(&mut server, &wire, 1).unwrap();
-    let wire = server
-        .send_response_with_body(response(200, Headers::new()), b"")
+    let mut wire = server
+        .send_response(response(200, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    wire.extend(server.end_of_message(Headers::new()).unwrap());
     feed(&mut client, &wire, 1).unwrap();
     client.start_next_cycle().unwrap();
     server.start_next_cycle().unwrap();
@@ -1415,8 +1425,9 @@ fn continue_requires_final_response() {
     feed(&mut server, b"x", 1).unwrap();
     assert!(server.start_next_cycle().is_err());
     server
-        .send_response_with_body(response(200, Headers::new()), b"")
+        .send_response(response(200, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     server.start_next_cycle().unwrap();
 }
 
@@ -1474,8 +1485,9 @@ fn timeout_response_closes_incomplete_request() {
     )
     .unwrap();
     let wire = server
-        .send_response_with_body(response(408, Headers::new()), b"")
+        .send_response(response(408, headers([(b"Content-Length", b"0")])))
         .unwrap();
+    server.end_of_message(Headers::new()).unwrap();
     assert!(
         wire.windows(b"Connection: close".len())
             .any(|w| w == b"Connection: close")

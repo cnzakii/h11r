@@ -24,6 +24,8 @@ _T = TypeVar("_T")
 class Role:
     CLIENT: ClassVar[Role]
     SERVER: ClassVar[Role]
+    @property
+    def name(self) -> str: ...
 
 @final
 class State:
@@ -36,11 +38,15 @@ class State:
     MUST_CLOSE: ClassVar[State]
     CLOSED: ClassVar[State]
     ERROR: ClassVar[State]
+    @property
+    def name(self) -> str: ...
 
 @final
 class ReceiveStatus:
     NEED_DATA: ClassVar[ReceiveStatus]
     PAUSED: ClassVar[ReceiveStatus]
+    @property
+    def name(self) -> str: ...
 
 class ProtocolError(Exception): ...
 class LocalProtocolError(ProtocolError): ...
@@ -175,7 +181,6 @@ class Connection:
         target: _Buffer | str,
         headers: _HeaderInput,
         *,
-        body: _Buffer | None = None,
         http_version: _Buffer | str | None = None,
     ) -> bytes: ...
     def send_informational_response(
@@ -191,7 +196,6 @@ class Connection:
         status_code: int,
         headers: _HeaderInput | None = None,
         *,
-        body: _Buffer | None = None,
         reason: _Buffer | str | None = None,
         http_version: _Buffer | str | None = None,
     ) -> bytes: ...

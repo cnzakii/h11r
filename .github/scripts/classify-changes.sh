@@ -29,7 +29,7 @@ classify() {
             crates/h11r/README.md | docs/griffe_runtime_docstrings.py)
                 code=true
                 ;;
-            .agents/* | .github/ISSUE_TEMPLATE/* | .readthedocs.yaml | docs/* | \
+            .github/ISSUE_TEMPLATE/* | .readthedocs.yaml | docs/* | \
             zensical.toml | *.md | LICENSE*)
                 ;;
             *)
@@ -45,8 +45,6 @@ if [ "${1-}" = "--self-test" ]; then
     test "$(printf '%s\n' README.md | classify)" = "code=false
 docs=true"
     test "$(printf '%s\n' .github/ISSUE_TEMPLATE/01-bug-report.yml | classify)" = "code=false
-docs=false"
-    test "$(printf '%s\n' docs/knowledge/tooling/zensical.md | classify)" = "code=false
 docs=false"
     test "$(printf '%s\n' .readthedocs.yaml | classify)" = "code=false
 docs=true"

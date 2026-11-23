@@ -57,12 +57,8 @@ uv add h11r
 import h11r
 
 client = h11r.Connection(h11r.Role.CLIENT)
-request_bytes = client.send_request(
-    "GET",
-    "/hello",
-    [("Host", "example.test")],
-    body=b"",
-)
+request_bytes = client.send_request("GET", "/hello", [("Host", "example.test")])
+request_bytes += client.end_of_message()
 ```
 
 Your transport writes `request_bytes` to the peer. Bytes read from the peer go
@@ -110,7 +106,11 @@ without reimplementing HTTP/1.1 framing and state.
 
 The recorded `pyperf` run compares `h11r` with `h11` through their public
 Python APIs. Each workload includes protocol state transitions and reuses its
-connection. Lower time and higher relative throughput are better.
+connection. Lower time and higher relative throughput are better. The
+Plaintext scenario follows TechEmpower's, with 16 pipelined requests in one
+read. The second table follows gRPC's latency benchmark: one round trip in
+flight, each timed on its own, with the median and the 99th percentile, beside
+the memory a server holds per keep-alive connection.
 
 --8<-- "python-benchmark.md"
 

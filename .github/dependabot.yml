@@ -18,5 +18,7 @@ updates:
     schedule:
       interval: monthly
     ignore:
-      # `@1.88` selects the tested MSRV, not an action version to advance.
+      # The action has no release tags, so Dependabot cannot update its SHA
+      # pin; refresh it by hand. Its `toolchain` input, not its commit,
+      # selects the tested Rust versions.
       - dependency-name: dtolnay/rust-toolchain

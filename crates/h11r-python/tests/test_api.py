@@ -112,6 +112,21 @@ def test_receive_data_accepts_reused_receive_buffer() -> None:
     assert request_event.headers == ((b"Host", b"example.test"),)
 
 
+def test_body_from_a_reused_receive_buffer_survives_the_next_read() -> None:
+    connection = h11r.Connection(h11r.Role.SERVER)
+    connection.receive_data(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n")
+    assert isinstance(connection.next_event(), h11r.Request)
+    buffer = bytearray(b"abcd")
+
+    connection.receive_data(memoryview(buffer))
+    buffer[:] = b"efgh"
+    connection.receive_data(memoryview(buffer))
+
+    assert connection.next_event() == h11r.Data(b"abcd")
+    assert connection.next_event() == h11r.Data(b"efgh")
+    assert isinstance(connection.next_event(), h11r.EndOfMessage)
+
+
 LENGTH_UPLOAD = (
     b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789"
     b"GET /next HTTP/1.1\r\nHost: x\r\n\r\n"
@@ -219,9 +234,9 @@ def test_mutable_or_overlong_body_input_is_copied() -> None:
     connection.receive_data(overlong)
 
     events = _drain(connection)
-    # Both went to the receive buffer, so they surface as one Data event,
-    # unaffected by the later mutation.
-    assert [_summarize(event) for event in events] == [
+    # Neither input is observed after the call, so the later mutation does
+    # not reach the body.
+    assert _merge_data([_summarize(event) for event in events]) == [
         ("data", b"abcd", False, False),
         ("end", ()),
     ]
@@ -769,8 +784,8 @@ def test_headers_can_be_reused_across_sends() -> None:
         server.next_event()
         server.next_event()
         assert (
-            server.send_response(200, fields, body=b"ok")
-            == b"HTTP/1.1 200 \r\nServer: example\r\nContent-Length: 2\r\n\r\nok"
+            server.send_response(200, fields)
+            == b"HTTP/1.1 200 \r\nServer: example\r\nTransfer-Encoding: chunked\r\n\r\n"
         )
     assert fields == ((b"Server", b"example"),)
 
@@ -802,33 +817,6 @@ def test_client_refuses_reuse_when_unsolicited_bytes_follow_a_response() -> None
     assert not client.keep_alive
 
 
-def test_body_keyword_sends_a_complete_message_in_one_call() -> None:
-    client = h11r.Connection(h11r.Role.CLIENT)
-    wire = client.send_request("POST", "/items", [("Host", "x")], body=b"hi")
-    assert wire == b"POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nhi"
-    assert client.local_state is h11r.State.DONE
-
-    server = h11r.Connection(h11r.Role.SERVER)
-    server.receive_data(wire)
-    assert isinstance(server.next_event(), h11r.Request)
-    assert server.next_event() == h11r.Data(b"hi")
-    assert isinstance(server.next_event(), h11r.EndOfMessage)
-    assert server.send_response(200, body=memoryview(b"ok")) == (
-        b"HTTP/1.1 200 \r\nContent-Length: 2\r\n\r\nok"
-    )
-
-
-def test_rejected_body_keyword_leaves_the_connection_unchanged() -> None:
-    server = h11r.Connection(h11r.Role.SERVER)
-    server.receive_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-    assert isinstance(server.next_event(), h11r.Request)
-    assert isinstance(server.next_event(), h11r.EndOfMessage)
-    with pytest.raises(h11r.LocalProtocolError):
-        server.send_response(200, [("Content-Length", "5")], body=b"four")
-    assert server.local_state is h11r.State.SEND_RESPONSE
-    assert server.send_response(204, body=b"") == b"HTTP/1.1 204 \r\n\r\n"
-
-
 def test_received_registered_methods_and_versions_are_exact_bytes() -> None:
     for method in ("TRACE", "PATCH", "PURGE"):
         server = h11r.Connection(h11r.Role.SERVER)
@@ -838,13 +826,13 @@ def test_received_registered_methods_and_versions_are_exact_bytes() -> None:
         assert (request.method, request.http_version) == (method.encode(), b"1.0")
 
 
-def test_a_successful_connect_response_with_body_keyword_opens_the_tunnel() -> None:
+def test_a_successful_connect_response_opens_the_tunnel() -> None:
     server = h11r.Connection(h11r.Role.SERVER)
     server.receive_data(
         b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n"
     )
     assert isinstance(server.next_event(), h11r.Request)
-    assert server.send_response(200, body=b"") == b"HTTP/1.1 200 \r\n\r\n"
+    assert server.send_response(200) == b"HTTP/1.1 200 \r\n\r\n"
     assert server.local_state is h11r.State.SWITCHED_PROTOCOL
 
 
@@ -856,6 +844,13 @@ def test_states_and_roles_are_hashable_constants() -> None:
     assert hash(h11r.ReceiveStatus.NEED_DATA) == hash(h11r.ReceiveStatus.NEED_DATA)
     assert h11r.State.IDLE != 0
     assert not hasattr(h11r, "Sequence")
+
+
+def test_constants_name_their_member_for_logging() -> None:
+    for kind in (h11r.Role, h11r.State, h11r.ReceiveStatus):
+        for name, member in vars(kind).items():
+            if isinstance(member, kind):
+                assert member.name == name
 
 
 @pytest.mark.parametrize("status_code", [-1, 99, 600, 70000, 2**70])
@@ -873,7 +868,8 @@ def test_lenient_clients_drop_invalid_response_field_lines() -> None:
     wire = b"HTTP/1.1 200 OK\r\nget-ban/portal.php: x\r\nContent-Length: 0\r\n\r\n"
     for lenient in (False, True):
         client = h11r.Connection(h11r.Role.CLIENT, lenient=lenient)
-        client.send_request("GET", "/", [("Host", "example.test")], body=b"")
+        client.send_request("GET", "/", [("Host", "example.test")])
+        client.end_of_message()
         client.receive_data(wire)
         if not lenient:
             with pytest.raises(h11r.RemoteProtocolError):
@@ -904,10 +900,8 @@ def test_every_state_version_and_status_input_crosses_the_python_boundary() -> N
     assert isinstance(request, h11r.Request)
     assert request.http_version == b"1.0"
     with pytest.raises(h11r.LocalProtocolError):
-        server.send_response(200, http_version=b"1.0", body=b"", reason=b"\r")
-    assert server.send_response(200, http_version=b"1.0", body=b"").startswith(
-        b"HTTP/1.0 200 "
-    )
+        server.send_response(200, http_version=b"1.0", reason=b"\r")
+    assert server.send_response(200, http_version=b"1.0").startswith(b"HTTP/1.0 200 ")
 
     with pytest.raises(ValueError, match="http_version"):
         h11r.Response(200, http_version=b"2.0")

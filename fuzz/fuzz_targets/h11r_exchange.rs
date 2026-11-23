@@ -36,6 +36,10 @@ fn respond(server: &mut Connection, choice: u8) {
     if choice & 0x08 != 0 {
         fields = headers([(b"Connection", b"close")]);
     }
+    if choice & 0x20 == 0 {
+        // A complete one-byte body framed by Content-Length.
+        fields.push("Content-Length", "1");
+    }
     let response = Response {
         status: StatusCode::from_u16(status).unwrap(),
         reason: b"R".to_vec(),
@@ -46,12 +50,7 @@ fn respond(server: &mut Connection, choice: u8) {
             Version::Http10
         },
     };
-    let head = if choice & 0x20 == 0 {
-        server.send_response_with_body(response, b"x")
-    } else {
-        server.send_response(response)
-    };
-    let Ok(head) = head else {
+    let Ok(head) = server.send_response(response) else {
         return;
     };
     if server.local_state() != State::SwitchedProtocol {

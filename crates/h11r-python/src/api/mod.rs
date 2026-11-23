@@ -138,6 +138,49 @@ enum PyReceiveStatus {
     Paused,
 }
 
+#[pymethods]
+impl PyRole {
+    /// The member name, such as `"SERVER"`.
+    #[getter]
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Client => "CLIENT",
+            Self::Server => "SERVER",
+        }
+    }
+}
+
+#[pymethods]
+impl PyState {
+    /// The member name, such as `"DONE"`.
+    #[getter]
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Idle => "IDLE",
+            Self::SendResponse => "SEND_RESPONSE",
+            Self::SendBody => "SEND_BODY",
+            Self::Done => "DONE",
+            Self::MightSwitchProtocol => "MIGHT_SWITCH_PROTOCOL",
+            Self::SwitchedProtocol => "SWITCHED_PROTOCOL",
+            Self::MustClose => "MUST_CLOSE",
+            Self::Closed => "CLOSED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[pymethods]
+impl PyReceiveStatus {
+    /// The member name, such as `"NEED_DATA"`.
+    #[getter]
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::NeedData => "NEED_DATA",
+            Self::Paused => "PAUSED",
+        }
+    }
+}
+
 fn status(value: &Bound<'_, PyAny>) -> PyResult<StatusCode> {
     // An int beyond `u16` is an invalid status like any other out of range.
     let code = match value.extract::<u16>() {

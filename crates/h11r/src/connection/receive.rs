@@ -468,6 +468,8 @@ impl Connection {
     fn finish_peer(&mut self, trailers: Headers) -> Result<Polled, RemoteProtocolError> {
         self.advance_peer(StateEvent::EndOfMessage)?;
         self.cycle.reader = Reader::Head;
+        // A request that ended has nothing left to send after 100 Continue.
+        self.cycle.waiting_for_continue = false;
         Ok(Polled::Event(Event::EndOfMessage(EndOfMessage {
             trailers,
         })))

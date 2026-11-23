@@ -35,7 +35,7 @@ docs-benchmark:
 	uv run --locked --group benchmark python \
 		crates/h11r-python/benchmarks/render_results.py \
 		docs/assets/python-benchmark.json \
-		--svg docs/assets/python-benchmark.svg \
+		docs/assets/python-latency-memory.json \
 		--table docs/assets/python-benchmark.md \
 		--readme README.md
 
@@ -62,4 +62,6 @@ coverage:
 	uv --directory crates/h11r-python run --locked maturin develop; \
 	uv run --locked coverage run -m pytest; \
 	uv run --locked coverage xml; \
-	cargo llvm-cov report --lcov --output-path rust.lcov
+	cargo llvm-cov report --lcov --output-path rust.lcov; \
+	awk -F'[:,]' -f .github/scripts/drop-pymethods-lines.awk rust.lcov > rust.lcov.tmp; \
+	mv rust.lcov.tmp rust.lcov
